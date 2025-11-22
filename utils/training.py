@@ -125,7 +125,7 @@ class Trainer:
         fool_rate_threshold = getattr(args, "disdkd_fool_rate_threshold", 0.85)
 
         # Learning rates per phase
-        phase1_lr = getattr(args, "discriminator_lr", 1e-3)
+        phase1_lr = getattr(args, "disdkd_phase1_lr", 1e-3)
         phase2_lr = getattr(args, "disdkd_phase2_lr", 1e-3)
         phase3_lr = getattr(args, "disdkd_phase3_lr", 1e-4)
 
@@ -150,7 +150,9 @@ class Trainer:
             )
             disc_acc = metrics["disc_accuracy"]
 
-            # Log
+            # Log with phase info
+            losses["disdkd_phase"] = 1
+            losses["disc_acc"] = disc_acc * 100  # Convert to percentage
             self.loss_tracker.log_epoch(global_epoch, "train", losses, 0.0)
 
             elapsed = time.time() - start_time
@@ -194,7 +196,9 @@ class Trainer:
             )
             fool_rate = metrics["fool_rate"]
 
-            # Log
+            # Log with phase info
+            losses["disdkd_phase"] = 2
+            losses["fool_rate"] = fool_rate * 100  # Convert to percentage
             self.loss_tracker.log_epoch(global_epoch, "train", losses, 0.0)
 
             elapsed = time.time() - start_time
@@ -239,7 +243,9 @@ class Trainer:
             )
             val_losses, val_acc = self._validate(val_loader, global_epoch)
 
-            # Log
+            # Log with phase info
+            losses["disdkd_phase"] = 3
+            val_losses["disdkd_phase"] = 3
             self.loss_tracker.log_epoch(global_epoch, "train", losses, train_acc)
             self.loss_tracker.log_epoch(global_epoch, "val", val_losses, val_acc)
 
@@ -261,6 +267,9 @@ class Trainer:
                     val_acc,
                     self.args,
                     is_best=True,
+                )
+                print(
+                    f"New best accuracy: {best_acc:.2f}% - Saved to {self.args.save_dir}"
                 )
 
             global_epoch += 1
