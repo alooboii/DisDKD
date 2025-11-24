@@ -1,9 +1,11 @@
 import time
 from pathlib import Path
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, StepLR
 from tqdm import tqdm
 
 from utils.utils import accuracy, AverageMeter
@@ -118,11 +120,11 @@ class Trainer:
 
         # Phase boundaries
         phase1_max = getattr(args, "disdkd_phase1_epochs", 3)
-        phase2_max = getattr(args, "disdkd_phase2_epochs", 7)
+        phase2_max = getattr(args, "disdkd_phase2_epochs", 6)
         phase1_min = getattr(args, "disdkd_phase1_min", 2)
-        phase2_min = getattr(args, "disdkd_phase2_min", 3)
-        disc_acc_threshold = getattr(args, "disdkd_disc_acc_threshold", 0.75)
-        fool_rate_threshold = getattr(args, "disdkd_fool_rate_threshold", 0.75)
+        phase2_min = getattr(args, "disdkd_phase2_min", 4)
+        disc_acc_threshold = getattr(args, "disdkd_disc_acc_threshold", 0.8)
+        fool_rate_threshold = getattr(args, "disdkd_fool_rate_threshold", 0.88)
 
         # Learning rates per phase
         phase1_lr = getattr(args, "disdkd_phase1_lr", 1e-3)
@@ -136,88 +138,86 @@ class Trainer:
         print("PHASE 1: Discriminator Warmup")
         print("=" * 60)
 
+        # Prepare optimizers for both phases up front since we will alternate
+        # between Phase 1 and Phase 2 for the first 10 epochs.
         self.model.set_phase(1)
-        optimizer = self.model.get_phase1_optimizer(
+        phase1_optimizer = self.model.get_phase1_optimizer(
             lr=phase1_lr, weight_decay=args.weight_decay
         )
 
-        phase1_epochs_run = 0
-        for epoch in range(phase1_max):
-            start_time = time.time()
-
-            losses, metrics = self._train_epoch_phase1(
-                train_loader, optimizer, global_epoch
-            )
-            disc_acc = metrics["disc_accuracy"]
-
-            # Log with phase info
-            losses["disdkd_phase"] = 1
-            losses["disc_acc"] = disc_acc * 100  # Convert to percentage
-            self.loss_tracker.log_epoch(global_epoch, "train", losses, 0.0)
-
-            elapsed = time.time() - start_time
-            print(
-                f'Epoch {global_epoch} [P1]: Disc Loss {losses["disc"]:.4f}, '
-                f"Disc Acc {disc_acc:.2%}, Time {elapsed:.1f}s"
-            )
-
-            global_epoch += 1
-            phase1_epochs_run += 1
-
-            # Early transition check
-            if disc_acc >= disc_acc_threshold and phase1_epochs_run >= phase1_min:
-                print(
-                    f"Discriminator converged (acc={disc_acc:.2%}), transitioning to Phase 2"
-                )
-                break
-
-        print(f"Phase 1 completed after {phase1_epochs_run} epochs")
-
-        # ========== PHASE 2: Adversarial Feature Alignment ==========
-        print("\n" + "=" * 60)
-        print("PHASE 2: Adversarial Feature Alignment")
-        print("=" * 60)
-
         self.model.set_phase(2)
-        optimizer = self.model.get_phase2_optimizer(
+        phase2_optimizer = self.model.get_phase2_optimizer(
             lr=phase2_lr, weight_decay=args.weight_decay
         )
 
+        phase1_epochs_run = 0
         phase2_epochs_run = 0
-        remaining_for_phase2 = min(
-            phase2_max, total_epochs - global_epoch - 5
-        )  # Reserve at least 5 for Phase 3
 
-        for epoch in range(remaining_for_phase2):
+        alternating_epochs = min(10, total_epochs)
+        print(
+            f"Alternating Phase 1 and Phase 2 for the first {alternating_epochs} epochs"
+        )
+
+        for cycle_epoch in range(alternating_epochs):
             start_time = time.time()
 
-            losses, metrics = self._train_epoch_phase2(
-                train_loader, optimizer, global_epoch
-            )
-            fool_rate = metrics["fool_rate"]
+            if cycle_epoch % 2 == 0:
+                # Phase 1 step
+                self.model.set_phase(1)
+                losses, metrics = self._train_epoch_phase1(
+                    train_loader, phase1_optimizer, global_epoch
+                )
+                disc_acc = metrics["disc_accuracy"]
 
-            # Log with phase info
-            losses["disdkd_phase"] = 2
-            losses["fool_rate"] = fool_rate * 100  # Convert to percentage
-            self.loss_tracker.log_epoch(global_epoch, "train", losses, 0.0)
+                # Log with phase info
+                losses["disdkd_phase"] = 1
+                losses["disc_acc"] = disc_acc * 100  # Convert to percentage
+                self.loss_tracker.log_epoch(global_epoch, "train", losses, 0.0)
 
-            elapsed = time.time() - start_time
-            print(
-                f'Epoch {global_epoch} [P2]: Adv Loss {losses["adversarial"]:.4f}, '
-                f"Fool Rate {fool_rate:.2%}, Time {elapsed:.1f}s"
-            )
+                elapsed = time.time() - start_time
+                print(
+                    f'Epoch {global_epoch} [P1]: Disc Loss {losses["disc"]:.4f}, '
+                    f"Disc Acc {disc_acc:.2%}, Time {elapsed:.1f}s"
+                )
+
+                phase1_epochs_run += 1
+
+                if disc_acc >= disc_acc_threshold and phase1_epochs_run >= phase1_min:
+                    print(
+                        f"Discriminator reached threshold during alternating schedule (acc={disc_acc:.2%})"
+                    )
+            else:
+                # Phase 2 step
+                self.model.set_phase(2)
+
+                losses, metrics = self._train_epoch_phase2(
+                    train_loader, phase2_optimizer, global_epoch
+                )
+                fool_rate = metrics["fool_rate"]
+
+                # Log with phase info
+                losses["disdkd_phase"] = 2
+                losses["fool_rate"] = fool_rate * 100  # Convert to percentage
+                self.loss_tracker.log_epoch(global_epoch, "train", losses, 0.0)
+
+                elapsed = time.time() - start_time
+                print(
+                    f'Epoch {global_epoch} [P2]: Adv Loss {losses["adversarial"]:.4f}, '
+                    f"Fool Rate {fool_rate:.2%}, Time {elapsed:.1f}s"
+                )
+
+                phase2_epochs_run += 1
+
+                if fool_rate >= fool_rate_threshold and phase2_epochs_run >= phase2_min:
+                    print(
+                        f"Feature fooling reached threshold during alternating schedule (fool_rate={fool_rate:.2%})"
+                    )
 
             global_epoch += 1
-            phase2_epochs_run += 1
 
-            # Early transition check
-            if fool_rate >= fool_rate_threshold and phase2_epochs_run >= phase2_min:
-                print(
-                    f"Feature alignment complete (fool_rate={fool_rate:.2%}), transitioning to Phase 3"
-                )
-                break
-
-        print(f"Phase 2 completed after {phase2_epochs_run} epochs")
+        print(
+            f"Phase 1 steps completed: {phase1_epochs_run}, Phase 2 steps completed: {phase2_epochs_run}"
+        )
 
         # ========== PHASE 3: DKD Fine-tuning ==========
         print("\n" + "=" * 60)
@@ -228,11 +228,15 @@ class Trainer:
         self.model.discard_adversarial_components()
         self.model.set_phase(3)
         optimizer = self.model.get_phase3_optimizer(
-            lr=phase3_lr, weight_decay=args.weight_decay * 50
+            lr=phase3_lr, weight_decay=args.weight_decay * 5
         )
-        scheduler = StepLR(optimizer, step_size=args.step_size, gamma=args.lr_decay)
-
         remaining_epochs = total_epochs - global_epoch
+        scheduler = CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=5,
+            T_mult=1,
+            eta_min=phase3_lr * 0.01,
+        )
         print(f"Phase 3 will run for {remaining_epochs} epochs")
 
         for epoch in range(remaining_epochs):
@@ -249,7 +253,7 @@ class Trainer:
             self.loss_tracker.log_epoch(global_epoch, "train", losses, train_acc)
             self.loss_tracker.log_epoch(global_epoch, "val", val_losses, val_acc)
 
-            scheduler.step()
+            scheduler.step(epoch)
 
             elapsed = time.time() - start_time
             print(
@@ -373,12 +377,10 @@ class Trainer:
             adv_loss_meter.update(adv_val, batch_size)
             fool_rate_meter.update(result["fool_rate"], batch_size)
             student_pred_meter.update(result["student_pred_mean"], batch_size)
-            if "feature_match_loss" in result:
-                match_val = result["feature_match_loss"]
-                if isinstance(match_val, torch.Tensor):
-                    match_val = match_val.item()
-                match_loss_meter.update(match_val, batch_size)
-
+            match_val = result.get("feature_match_loss", 0.0)
+            if isinstance(match_val, torch.Tensor):
+                match_val = match_val.item()
+            match_loss_meter.update(match_val, batch_size)
             progress_bar.set_postfix(
                 {
                     "total": f"{total_loss_meter.avg:.4f}",
@@ -400,6 +402,24 @@ class Trainer:
 
         return losses, metrics
 
+    def mixup_data(self, x, y, alpha=0.2):
+        """Apply mixup augmentation."""
+        if alpha > 0:
+            lam = np.random.beta(alpha, alpha)
+        else:
+            lam = 1
+
+        batch_size = x.size(0)
+        index = torch.randperm(batch_size, device=x.device)
+
+        mixed_x = lam * x + (1 - lam) * x[index]
+        y_a, y_b = y, y[index]
+        return mixed_x, y_a, y_b, lam
+
+    def mixup_criterion(self, pred, y_a, y_b, lam):
+        """Compute mixup loss."""
+        return lam * self.criterion(pred, y_a) + (1 - lam) * self.criterion(pred, y_b)
+
     def _train_epoch_phase3(self, train_loader, optimizer, epoch):
         """Train full student with DKD for one epoch (Phase 3)."""
         # Keep the frozen teacher in eval mode while only the student trains
@@ -419,14 +439,26 @@ class Trainer:
             inputs, targets = inputs.to(self.device), targets.to(self.device)
             batch_size = inputs.size(0)
 
+            use_mixup = self.args.disdkd_phase3_mixup and np.random.rand() < 0.5
+            if use_mixup:
+                inputs, targets_a, targets_b, lam = self.mixup_data(inputs, targets, alpha=0.2)
+
             optimizer.zero_grad()
-            result = self.model(inputs, targets)
 
-            student_logits = result["student_logits"]
-            dkd_loss = result["dkd_loss"]
+            if use_mixup:
+                result_a = self.model(inputs, targets_a)
+                result_b = self.model(inputs, targets_b)
+                student_logits = result_a["student_logits"]
+                dkd_loss = lam * result_a["dkd_loss"] + (1 - lam) * result_b["dkd_loss"]
+                ce_loss = self.mixup_criterion(student_logits, targets_a, targets_b, lam)
+            else:
+                result = self.model(inputs, targets)
+                student_logits = result["student_logits"]
+                dkd_loss = result["dkd_loss"]
 
-            # CE + DKD
-            ce_loss = self.criterion(student_logits, targets)
+                # CE + DKD
+                ce_loss = self.criterion(student_logits, targets)
+
             total_loss = self.args.alpha * ce_loss + dkd_loss
 
             if not torch.isfinite(total_loss):
