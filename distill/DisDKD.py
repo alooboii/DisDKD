@@ -77,17 +77,13 @@ class FeatureDiscriminator(nn.Module):
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.max_pool = nn.AdaptiveMaxPool2d(1)
 
-        # Three-layer head with lighter dropout to provide richer gradients for
-        # pure adversarial alignment while avoiding overpowering the student.
+        # Shallow head to avoid overpowering the student during adversarial alignment.
         self.discriminator = nn.Sequential(
             nn.Flatten(),
-            nn.Dropout(0.3),
-            nn.Linear(hidden_channels * 2, hidden_channels * 2),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
+            nn.Dropout(0.5),
             nn.Linear(hidden_channels * 2, hidden_channels),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
+            nn.Dropout(0.5),
             nn.Linear(hidden_channels, 1),
             # No Sigmoid - returns logits
         )
@@ -97,7 +93,7 @@ class FeatureDiscriminator(nn.Module):
     def _init_weights(self):
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                nn.init.xavier_normal_(module.weight, gain=0.02)
+                nn.init.xavier_normal_(module.weight, gain=0.005)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
             elif isinstance(module, nn.Conv2d):
@@ -152,7 +148,6 @@ class DisDKD(nn.Module):
         phase2_match_weight=0.0,
         adversarial_weight=1.0,
         gradient_penalty_weight=0.0,
-        diversity_weight=0.1,
     ):
         super(DisDKD, self).__init__()
         self.teacher = teacher
@@ -166,7 +161,6 @@ class DisDKD(nn.Module):
         self.phase2_match_weight = phase2_match_weight
         self.adversarial_weight = adversarial_weight
         self.gradient_penalty_weight = gradient_penalty_weight
-        self.diversity_weight = diversity_weight
 
         self.teacher_layer = teacher_layer
         self.student_layer = student_layer
@@ -213,8 +207,7 @@ class DisDKD(nn.Module):
             f"standardization={'on' if normalize_hidden else 'off'}, "
             f"phase2_match_weight={phase2_match_weight}, "
             f"adversarial_weight={adversarial_weight}, "
-            f"gradient_penalty={gradient_penalty_weight}, "
-            f"diversity_weight={diversity_weight}"
+            f"gradient_penalty={gradient_penalty_weight}"
         )
 
     def set_phase(self, phase):
@@ -547,19 +540,12 @@ class DisDKD(nn.Module):
                 gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
                 disc_loss = disc_loss + self.gradient_penalty_weight * gradient_penalty
 
-            # Adaptive scaling to keep discriminator in the Goldilocks zone
+            # Compute accuracy for monitoring only (no adaptive scaling)
             with torch.no_grad():
                 all_logits = torch.cat([teacher_logits, student_logits], dim=0)
                 all_labels = torch.cat([real_labels, fake_labels], dim=0)
                 all_preds = (torch.sigmoid(all_logits) > 0.5).float()
                 disc_accuracy = (all_preds == all_labels).float().mean()
-
-                if disc_accuracy > 0.90:
-                    loss_scale = 0.5
-                elif disc_accuracy < 0.60:
-                    loss_scale = 1.5
-                else:
-                    loss_scale = 1.0
 
                 teacher_pred = torch.sigmoid(teacher_logits)
                 student_pred = torch.sigmoid(student_logits)
@@ -623,15 +609,6 @@ class DisDKD(nn.Module):
                     F.mse_loss(student_hidden, teacher_hidden, reduction="sum")
                     / batch_size
                 )
-
-            diversity_loss = torch.tensor(0.0, device=x.device)
-            if self.diversity_weight > 0 and batch_size > 1:
-                student_flat = student_hidden.view(batch_size, -1)
-                student_norm = F.normalize(student_flat, p=2, dim=1)
-                similarity_matrix = torch.mm(student_norm, student_norm.t())
-                mask = torch.eye(batch_size, device=x.device).bool()
-                off_diagonal = similarity_matrix.masked_select(~mask)
-                diversity_loss = off_diagonal.mean()
 
             total_loss = (
                 self.adversarial_weight * adversarial_loss

@@ -105,8 +105,8 @@ def parse_args():
     parser.add_argument(
         "--disdkd_diversity_weight",
         type=float,
-        default=0.1,
-        help="Weight for feature diversity regularization during Phase 2",
+        default=0.0,
+        help="[DISABLED] Weight for feature diversity regularization during Phase 2",
     )
 
     # DKD hyperparameters
@@ -365,7 +365,6 @@ def print_training_config(args):
         )
         print(
             f"Regularization: gradient_penalty={args.disdkd_gradient_penalty}, "
-            f"diversity_weight={args.disdkd_diversity_weight}, "
             f"phase3_mixup={'on' if args.disdkd_phase3_mixup else 'off'}"
         )
         print(f"\nPhase 1 (Discriminator Warmup):")

@@ -149,9 +149,6 @@ class Trainer:
         phase2_optimizer = self.model.get_phase2_optimizer(
             lr=phase2_lr, weight_decay=args.weight_decay
         )
-        phase2_lr_warmup_epochs = 2
-        for param_group in phase2_optimizer.param_groups:
-            param_group["lr"] = phase2_lr * 0.1
 
         phase1_epochs_run = 0
         phase2_epochs_run = 0
@@ -192,16 +189,6 @@ class Trainer:
             else:
                 # Phase 2 step
                 self.model.set_phase(2)
-
-                if phase2_epochs_run < phase2_lr_warmup_epochs:
-                    warmup_progress = (phase2_epochs_run + 1) / phase2_lr_warmup_epochs
-                    current_lr = phase2_lr * (0.1 + 0.9 * warmup_progress)
-                    for param_group in phase2_optimizer.param_groups:
-                        param_group["lr"] = current_lr
-                    print(f"  Phase 2 LR warmup: {current_lr:.6f}")
-                else:
-                    for param_group in phase2_optimizer.param_groups:
-                        param_group["lr"] = phase2_lr
 
                 losses, metrics = self._train_epoch_phase2(
                     train_loader, phase2_optimizer, global_epoch
@@ -395,11 +382,6 @@ class Trainer:
             if isinstance(match_val, torch.Tensor):
                 match_val = match_val.item()
             match_loss_meter.update(match_val, batch_size)
-            diversity_val = result.get("diversity_loss", 0.0)
-            if isinstance(diversity_val, torch.Tensor):
-                diversity_val = diversity_val.item()
-            diversity_loss_meter.update(diversity_val, batch_size)
-
             progress_bar.set_postfix(
                 {
                     "total": f"{total_loss_meter.avg:.4f}",
