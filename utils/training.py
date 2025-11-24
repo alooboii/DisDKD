@@ -327,6 +327,7 @@ class Trainer:
 
     def _train_epoch_phase2(self, train_loader, optimizer, epoch):
         """Train student (up to layer G) for one epoch (Phase 2)."""
+        total_loss_meter = AverageMeter()
         adv_loss_meter = AverageMeter()
         fool_rate_meter = AverageMeter()
         student_pred_meter = AverageMeter()

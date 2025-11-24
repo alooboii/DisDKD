@@ -115,6 +115,7 @@ class DisDKD(nn.Module):
         feature_noise_std=0.05,
         normalize_hidden=True,
         phase2_match_weight=0.1,
+        adversarial_weight=1.0,
     ):
         super(DisDKD, self).__init__()
         self.teacher = teacher
@@ -126,6 +127,7 @@ class DisDKD(nn.Module):
         self.feature_noise_std = feature_noise_std
         self.normalize_hidden = normalize_hidden
         self.phase2_match_weight = phase2_match_weight
+        self.adversarial_weight = adversarial_weight
 
         self.teacher_layer = teacher_layer
         self.student_layer = student_layer
@@ -169,7 +171,8 @@ class DisDKD(nn.Module):
         print(
             f"Feature preprocessing: noise std={feature_noise_std}, "
             f"standardization={'on' if normalize_hidden else 'off'}, "
-            f"phase2_match_weight={phase2_match_weight}"
+            f"phase2_match_weight={phase2_match_weight}, "
+            f"adversarial_weight={adversarial_weight}"
         )
 
     def set_phase(self, phase):
@@ -195,6 +198,8 @@ class DisDKD(nn.Module):
             self.discriminator.train()
             self.teacher_regressor.train()
             self.student_regressor.eval()
+            self.teacher.eval()
+            self.student.eval()
 
         elif phase == 2:
             # Freeze: discriminator, teacher_regressor, student layers after G
@@ -208,6 +213,8 @@ class DisDKD(nn.Module):
             self.discriminator.eval()
             self.teacher_regressor.eval()
             self.student_regressor.train()
+            self.teacher.eval()
+            self.student.train()
 
         elif phase == 3:
             # Train: entire student
@@ -411,6 +418,10 @@ class DisDKD(nn.Module):
         with torch.no_grad():
             student_hidden = self.student_regressor(student_feat)
 
+        # Normalize / add noise so discriminator cannot rely on scale shortcuts
+        teacher_hidden = self._preprocess_hidden(teacher_hidden, add_noise=True)
+        student_hidden = self._preprocess_hidden(student_hidden)
+
         # Match spatial dimensions
         student_hidden = self.match_spatial_dimensions(student_hidden, teacher_hidden)
 
@@ -487,7 +498,10 @@ class DisDKD(nn.Module):
         feature_match_loss = torch.tensor(0.0, device=x.device)
         if self.phase2_match_weight > 0:
             feature_match_loss = F.mse_loss(student_hidden, teacher_hidden)
-        total_loss = adversarial_loss + self.phase2_match_weight * feature_match_loss
+        total_loss = (
+            self.adversarial_weight * adversarial_loss
+            + self.phase2_match_weight * feature_match_loss
+        )
 
         # Compute fool rate for early stopping check
         with torch.no_grad():
