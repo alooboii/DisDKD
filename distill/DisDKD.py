@@ -61,15 +61,15 @@ class FeatureDiscriminator(nn.Module):
 
         self.global_pool = nn.AdaptiveAvgPool2d(1)
 
+        # Deliberately shallow head with high dropout to avoid overpowering
+        # the generator during warmup.
         self.discriminator = nn.Sequential(
             nn.Flatten(),
+            nn.Dropout(0.5),
             nn.Linear(hidden_channels, hidden_channels // 2),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_channels // 2, hidden_channels // 4),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_channels // 4, 1),
+            nn.Dropout(0.5),
+            nn.Linear(hidden_channels // 2, 1),
             # No Sigmoid - returns logits
         )
 
@@ -123,7 +123,7 @@ class DisDKD(nn.Module):
         temperature=4.0,
         feature_noise_std=0.05,
         normalize_hidden=True,
-        phase2_match_weight=0.1,
+        phase2_match_weight=0.5,
         adversarial_weight=1.0,
     ):
         super(DisDKD, self).__init__()

@@ -93,7 +93,7 @@ def parse_args():
     parser.add_argument(
         "--disdkd_phase2_match_weight",
         type=float,
-        default=0.1,
+        default=0.5,
         help="Weight for auxiliary feature matching loss during Phase 2",
     )
 
