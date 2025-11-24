@@ -83,9 +83,11 @@ class FeatureDiscriminator(nn.Module):
         self.discriminator = nn.Sequential(
             nn.Flatten(),
             nn.Dropout(0.5),
-            nn.Linear(hidden_channels, hidden_channels // 2),
+            nn.Linear(hidden_channels * 2, hidden_channels),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
+            nn.Linear(hidden_channels, hidden_channels // 2),
+            nn.ReLU(inplace=True),
             nn.Linear(hidden_channels // 2, 1),
             # No Sigmoid - returns logits
         )
@@ -100,10 +102,14 @@ class FeatureDiscriminator(nn.Module):
                     nn.init.zeros_(module.bias)
             elif isinstance(module, nn.Conv2d):
                 nn.init.kaiming_normal_(module.weight, mode="fan_out", nonlinearity="relu")
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
 
     def forward(self, x):
         x = self.spatial(x)
-        pooled = self.global_pool(x)
+        pooled_avg = self.global_pool(x)
+        pooled_max = self.max_pool(x)
+        pooled = torch.cat([pooled_avg, pooled_max], dim=1)
         output = self.discriminator(pooled)
         return output  # Returns logits
 
@@ -238,13 +244,13 @@ class DisDKD(nn.Module):
             self._freeze_teacher_regressor()
             self._unfreeze_student_regressor()
             layers_to_train = self._unfreeze_student_up_to_layer_g()
+            self.phase2_layers_to_train = layers_to_train
 
             # Keep frozen modules in eval mode so dropout does not corrupt logits
             self.discriminator.eval()
             self.teacher_regressor.eval()
             self.student_regressor.train()
             self.teacher.eval()
-            self.student.eval()
             self._set_student_train_mode_up_to_layer_g(layers_to_train)
 
         elif phase == 3:
@@ -390,18 +396,23 @@ class DisDKD(nn.Module):
             )
         return student_feat
 
+    def _batch_normalize_pair(self, teacher_hidden, student_hidden):
+        """Apply shared batch/channel normalization across teacher and student features."""
+        combined = torch.cat([teacher_hidden, student_hidden], dim=0)
+        mean = combined.mean(dim=(0, 2, 3), keepdim=True)
+        std = combined.var(dim=(0, 2, 3), keepdim=True, unbiased=False).sqrt() + 1e-6
+        normalized = (combined - mean) / std
+        teacher_norm, student_norm = normalized.chunk(2, dim=0)
+        return teacher_norm, student_norm
+
     def _normalize_hidden(self, hidden):
         if not self.normalize_hidden:
             return hidden
 
-        # Normalize using batch + spatial statistics per channel to preserve
-        # inter-sample differences while preventing global scale shortcuts.
-        B, C, H, W = hidden.shape
-        flat = hidden.view(B, C, H * W)
-        mean = flat.mean(dim=(0, 2), keepdim=True)
-        std = flat.std(dim=(0, 2), keepdim=True, unbiased=False) + 1e-6
-        normalized = (flat - mean) / std
-        return normalized.view_as(hidden)
+        # Instance normalization: per-sample, per-channel over spatial dimensions
+        mean = hidden.mean(dim=(2, 3), keepdim=True)
+        std = hidden.var(dim=(2, 3), keepdim=True, unbiased=False).sqrt() + 1e-6
+        return (hidden - mean) / std
 
     def _preprocess_hidden(self, hidden, add_noise=False):
         if (
@@ -553,6 +564,11 @@ class DisDKD(nn.Module):
             teacher_hidden = self._preprocess_hidden(teacher_hidden, add_noise=True)
             student_hidden = self._preprocess_hidden(student_hidden)
 
+            # Apply shared batch normalization for fair feature matching
+            teacher_hidden, student_hidden = self._batch_normalize_pair(
+                teacher_hidden, student_hidden
+            )
+
             # Adversarial loss: student wants to be classified as teacher (1)
             student_logits = self.discriminator(student_hidden)
             real_labels = torch.ones(batch_size, 1, device=x.device)
@@ -560,7 +576,10 @@ class DisDKD(nn.Module):
 
             feature_match_loss = torch.tensor(0.0, device=x.device)
             if self.phase2_match_weight > 0:
-                feature_match_loss = F.mse_loss(student_hidden, teacher_hidden)
+                feature_match_loss = (
+                    F.mse_loss(student_hidden, teacher_hidden, reduction="sum")
+                    / batch_size
+                )
             total_loss = (
                 self.adversarial_weight * adversarial_loss
                 + self.phase2_match_weight * feature_match_loss
