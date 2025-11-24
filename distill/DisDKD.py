@@ -112,6 +112,10 @@ class DisDKD(nn.Module):
         alpha=1.0,
         beta=8.0,
         temperature=4.0,
+        feature_noise_std=0.05,
+        normalize_hidden=True,
+        phase2_match_weight=0.1,
+        adversarial_weight=1.0,
     ):
         super(DisDKD, self).__init__()
         self.teacher = teacher
@@ -120,6 +124,10 @@ class DisDKD(nn.Module):
         self.alpha = alpha
         self.beta = beta
         self.temperature = temperature
+        self.feature_noise_std = feature_noise_std
+        self.normalize_hidden = normalize_hidden
+        self.phase2_match_weight = phase2_match_weight
+        self.adversarial_weight = adversarial_weight
 
         self.teacher_layer = teacher_layer
         self.student_layer = student_layer
@@ -160,6 +168,12 @@ class DisDKD(nn.Module):
         )
         print(f"Discriminator: {count_params(self.discriminator)*1e-6:.3f}M params")
         print(f"DKD parameters: alpha={alpha}, beta={beta}, temperature={temperature}")
+        print(
+            f"Feature preprocessing: noise std={feature_noise_std}, "
+            f"standardization={'on' if normalize_hidden else 'off'}, "
+            f"phase2_match_weight={phase2_match_weight}, "
+            f"adversarial_weight={adversarial_weight}"
+        )
 
     def set_phase(self, phase):
         """
@@ -180,18 +194,35 @@ class DisDKD(nn.Module):
             self._unfreeze_discriminator()
             self._unfreeze_teacher_regressor()
 
+            # Ensure dropout/batchnorm behave correctly while training discriminator
+            self.discriminator.train()
+            self.teacher_regressor.train()
+            self.student_regressor.eval()
+            self.teacher.eval()
+            self.student.eval()
+
         elif phase == 2:
             # Freeze: discriminator, teacher_regressor, student layers after G
             # Train: student (up to G), student_regressor
             self._freeze_discriminator()
             self._freeze_teacher_regressor()
             self._unfreeze_student_regressor()
-            self._unfreeze_student_up_to_layer_g()
+            layers_to_train = self._unfreeze_student_up_to_layer_g()
+
+            # Keep frozen modules in eval mode so dropout does not corrupt logits
+            self.discriminator.eval()
+            self.teacher_regressor.eval()
+            self.student_regressor.train()
+            self.teacher.eval()
+            self.student.eval()
+            self._set_student_train_mode_up_to_layer_g(layers_to_train)
 
         elif phase == 3:
             # Train: entire student
             # Discard: regressors and discriminator (handled separately)
             self._unfreeze_student_completely()
+            self.teacher.eval()
+            self.student.train()
 
     def _freeze_student_completely(self):
         """Freeze all student parameters."""
@@ -244,6 +275,21 @@ class DisDKD(nn.Module):
             f"Phase 2: Student trainable params: {trainable:,} / {total:,} "
             f"({100*trainable/total:.1f}%) - up to {guided_layer_key}"
         )
+
+        return layers_to_unfreeze
+
+    def _set_student_train_mode_up_to_layer_g(self, layers_to_unfreeze):
+        """Put only layers up to G in train mode; keep later layers in eval mode."""
+        if not hasattr(self.student, "model"):
+            # Fallback: default to train if model wrapper is missing
+            self.student.train()
+            return
+
+        for name, module in self.student.model.named_children():
+            if name.split(".")[0] in layers_to_unfreeze:
+                module.train()
+            else:
+                module.eval()
 
     def _freeze_student_regressor(self):
         for param in self.student_regressor.parameters():
@@ -303,6 +349,21 @@ class DisDKD(nn.Module):
                 align_corners=False,
             )
         return student_feat
+
+    def _normalize_hidden(self, hidden):
+        if not self.normalize_hidden:
+            return hidden
+
+        flat = hidden.flatten(2)
+        mean = flat.mean(dim=2, keepdim=True)
+        std = flat.std(dim=2, keepdim=True, unbiased=False) + 1e-6
+        normalized = (flat - mean) / std
+        return normalized.view_as(hidden)
+
+    def _preprocess_hidden(self, hidden, add_noise=False):
+        if add_noise and self.feature_noise_std > 0:
+            hidden = hidden + torch.randn_like(hidden) * self.feature_noise_std
+        return self._normalize_hidden(hidden)
 
     def compute_dkd_loss(self, logits_student, logits_teacher, target):
         """
@@ -375,6 +436,10 @@ class DisDKD(nn.Module):
         with torch.no_grad():
             student_hidden = self.student_regressor(student_feat)
 
+        # Normalize / add noise so discriminator cannot rely on scale shortcuts
+        teacher_hidden = self._preprocess_hidden(teacher_hidden, add_noise=True)
+        student_hidden = self._preprocess_hidden(student_hidden)
+
         # Match spatial dimensions
         student_hidden = self.match_spatial_dimensions(student_hidden, teacher_hidden)
 
@@ -435,10 +500,22 @@ class DisDKD(nn.Module):
         # Match spatial dimensions
         student_hidden = self.match_spatial_dimensions(student_hidden, teacher_hidden)
 
+        # Normalize / add noise so discriminator cannot rely on scale shortcuts
+        teacher_hidden = self._preprocess_hidden(teacher_hidden, add_noise=True)
+        student_hidden = self._preprocess_hidden(student_hidden)
+
         # Adversarial loss: student wants to be classified as teacher (1)
         student_logits = self.discriminator(student_hidden)
         real_labels = torch.ones(batch_size, 1, device=x.device)
         adversarial_loss = self.bce_loss(student_logits, real_labels)
+
+        feature_match_loss = torch.tensor(0.0, device=x.device)
+        if self.phase2_match_weight > 0:
+            feature_match_loss = F.mse_loss(student_hidden, teacher_hidden)
+        total_loss = (
+            self.adversarial_weight * adversarial_loss
+            + self.phase2_match_weight * feature_match_loss
+        )
 
         # Compute fool rate for early stopping check
         with torch.no_grad():
@@ -451,6 +528,8 @@ class DisDKD(nn.Module):
 
         return {
             "adversarial_loss": adversarial_loss,
+            "feature_match_loss": feature_match_loss,
+            "total_loss": total_loss,
             "fool_rate": fool_rate.item(),
             "student_pred_mean": student_pred.mean().item(),
         }

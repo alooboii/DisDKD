@@ -60,6 +60,10 @@ def create_distillation_model(args, teacher, student, num_classes: int):
             alpha=args.dkd_alpha,
             beta=args.dkd_beta,
             temperature=args.tau,
+            feature_noise_std=args.disdkd_feature_noise_std,
+            normalize_hidden=not args.disdkd_disable_feature_norm,
+            phase2_match_weight=args.disdkd_phase2_match_weight,
+            adversarial_weight=args.disdkd_adversarial_weight,
         ),
         "FitNet": lambda: FitNet(
             teacher,
