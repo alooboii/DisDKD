@@ -472,6 +472,7 @@ class DisDKD(nn.Module):
         rt = torch.cat([t1, t2], dim=1)
         return rt
 
+
     def forward_phase1(self, x):
         """
         Phase 1: Train discriminator to distinguish teacher (1) from student (0).
@@ -480,43 +481,43 @@ class DisDKD(nn.Module):
         """
         try:
             batch_size = x.size(0)
-
+    
             # Forward pass (student frozen, just need features)
             with torch.no_grad():
                 _ = self.teacher(x)
                 _ = self.student(x)
-
+    
             # Extract features
             teacher_feat = self.teacher_hooks.features.get(self.teacher_layer)
             student_feat = self.student_hooks.features.get(self.student_layer)
-
+    
             # Project to hidden space
             teacher_hidden = self.teacher_regressor(teacher_feat)
             student_hidden = self.student_regressor(student_feat)
-
+    
             # Match spatial dimensions before preprocessing
             student_hidden = self.match_spatial_dimensions(student_hidden, teacher_hidden)
-
+    
             # Normalize / add noise so discriminator cannot rely on scale shortcuts
             teacher_hidden = self._preprocess_hidden(teacher_hidden, add_noise=True)
             student_hidden = self._preprocess_hidden(student_hidden)
             teacher_hidden, student_hidden = self._batch_normalize_pair(
                 teacher_hidden, student_hidden
             )
-
+    
             # Discriminator predictions (logits)
             teacher_logits = self.discriminator(teacher_hidden)
             student_logits = self.discriminator(student_hidden)
-
+    
             # Hard labels to encourage a strong decision boundary
             real_labels = torch.ones(batch_size, 1, device=x.device)
             fake_labels = torch.zeros(batch_size, 1, device=x.device)
-
+    
             # Discriminator loss (BCEWithLogitsLoss handles sigmoid internally)
             disc_loss_real = self.bce_loss(teacher_logits, real_labels)
             disc_loss_fake = self.bce_loss(student_logits, fake_labels)
             disc_loss = (disc_loss_real + disc_loss_fake) / 2
-
+    
             # Optional gradient penalty to stabilize discriminator training
             if (
                 self.training
@@ -527,7 +528,7 @@ class DisDKD(nn.Module):
                 interpolated = (
                     alpha * teacher_hidden + (1 - alpha) * student_hidden
                 ).requires_grad_(True)
-
+    
                 disc_interpolated = self.discriminator(interpolated)
                 gradients = torch.autograd.grad(
                     outputs=disc_interpolated,
@@ -539,19 +540,19 @@ class DisDKD(nn.Module):
                 gradients = gradients.view(batch_size, -1)
                 gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
                 disc_loss = disc_loss + self.gradient_penalty_weight * gradient_penalty
-
+    
             # Compute accuracy for monitoring only (no adaptive scaling)
             with torch.no_grad():
                 all_logits = torch.cat([teacher_logits, student_logits], dim=0)
                 all_labels = torch.cat([real_labels, fake_labels], dim=0)
                 all_preds = (torch.sigmoid(all_logits) > 0.5).float()
                 disc_accuracy = (all_preds == all_labels).float().mean()
-
+    
                 teacher_pred = torch.sigmoid(teacher_logits)
                 student_pred = torch.sigmoid(student_logits)
-
-            disc_loss = disc_loss * loss_scale
-
+    
+            # DELETE THIS LINE: disc_loss = disc_loss * loss_scale
+    
             return {
                 "disc_loss": disc_loss,
                 "disc_accuracy": disc_accuracy.item(),
@@ -613,8 +614,7 @@ class DisDKD(nn.Module):
             total_loss = (
                 self.adversarial_weight * adversarial_loss
                 + self.phase2_match_weight * feature_match_loss
-                - self.diversity_weight * diversity_loss
-            )
+            )  # REMOVED: - self.diversity_weight * diversity_loss
 
             # Compute fool rate for early stopping check
             with torch.no_grad():
@@ -624,11 +624,10 @@ class DisDKD(nn.Module):
             return {
                 "adversarial_loss": adversarial_loss,
                 "feature_match_loss": feature_match_loss,
-                "diversity_loss": diversity_loss,
                 "total_loss": total_loss,
                 "fool_rate": fool_rate.item(),
                 "student_pred_mean": student_pred.mean().item(),
-            }
+            }  # REMOVED: "diversity_loss": diversity_loss
         finally:
             # Ensure hooks are always cleared
             self.teacher_hooks.clear()
