@@ -58,7 +58,7 @@ def main():
         student = StudentModel(args.student, num_classes, args.student_weights).to(device)
     
     # Initialize trainer
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     log_path = Path(args.save_dir) / args.log_file
     loss_tracker = LossTracker(log_path, args.method)
     

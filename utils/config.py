@@ -93,7 +93,7 @@ def parse_args():
     parser.add_argument(
         "--disdkd_phase2_match_weight",
         type=float,
-        default=0.5,
+        default=2.0,
         help="Weight for auxiliary feature matching loss during Phase 2",
     )
 
@@ -105,37 +105,37 @@ def parse_args():
     parser.add_argument(
         "--disdkd_phase1_epochs",
         type=int,
-        default=3,
+        default=2,
         help="Max epochs for Phase 1 (discriminator warmup)",
     )
     parser.add_argument(
         "--disdkd_phase2_epochs",
         type=int,
-        default=7,
+        default=5,
         help="Max epochs for Phase 2 (adversarial feature alignment)",
     )
     parser.add_argument(
         "--disdkd_phase1_min",
         type=int,
-        default=2,
+        default=1,
         help="Min epochs before early transition from Phase 1",
     )
     parser.add_argument(
         "--disdkd_phase2_min",
         type=int,
-        default=3,
+        default=2,
         help="Min epochs before early transition from Phase 2",
     )
     parser.add_argument(
         "--disdkd_disc_acc_threshold",
         type=float,
-        default=0.95,
+        default=0.85,
         help="Discriminator accuracy threshold for Phase 1 early exit",
     )
     parser.add_argument(
         "--disdkd_fool_rate_threshold",
         type=float,
-        default=0.85,
+        default=0.8,
         help="Fool rate threshold for Phase 2 early exit",
     )
     parser.add_argument(
@@ -200,6 +200,12 @@ def parse_args():
     parser.add_argument("--beta", type=float, default=0.4, help="KD loss weight")
     parser.add_argument(
         "--gamma", type=float, default=1.0, help="Method-specific loss weight"
+    )
+    parser.add_argument(
+        "--label_smoothing",
+        type=float,
+        default=0.1,
+        help="Label smoothing factor for cross-entropy loss",
     )
     parser.add_argument("--tau", type=float, default=4.0, help="Temperature for KD")
 
@@ -323,6 +329,7 @@ def print_training_config(args):
     print(
         f"Loss weights - α (CE): {args.alpha}, β (KD): {args.beta}, γ (method): {args.gamma}"
     )
+    print(f"Label smoothing: {args.label_smoothing}")
 
     if args.method == "DKD":
         print(f"DKD weights - TCKD α: {args.dkd_alpha}, NCKD β: {args.dkd_beta}")
