@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from collections import OrderedDict
+from torch.nn.utils import spectral_norm
 
 from utils.utils import get_module, count_params
 
@@ -549,6 +550,8 @@ class DisDKD(nn.Module):
                 teacher_pred = torch.sigmoid(teacher_logits)
                 student_pred = torch.sigmoid(student_logits)
 
+            disc_loss = disc_loss * loss_scale
+
             return {
                 "disc_loss": disc_loss,
                 "disc_accuracy": disc_accuracy.item(),
@@ -590,6 +593,11 @@ class DisDKD(nn.Module):
             teacher_hidden = self._preprocess_hidden(teacher_hidden, add_noise=True)
             student_hidden = self._preprocess_hidden(student_hidden)
 
+            # Apply shared batch normalization for fair feature matching
+            teacher_hidden, student_hidden = self._batch_normalize_pair(
+                teacher_hidden, student_hidden
+            )
+
             # Adversarial loss: student wants to be classified as teacher (1)
             student_logits = self.discriminator(student_hidden)
             real_labels = torch.ones(batch_size, 1, device=x.device)
@@ -605,6 +613,7 @@ class DisDKD(nn.Module):
             total_loss = (
                 self.adversarial_weight * adversarial_loss
                 + self.phase2_match_weight * feature_match_loss
+                - self.diversity_weight * diversity_loss
             )
 
             # Compute fool rate for early stopping check
@@ -615,6 +624,7 @@ class DisDKD(nn.Module):
             return {
                 "adversarial_loss": adversarial_loss,
                 "feature_match_loss": feature_match_loss,
+                "diversity_loss": diversity_loss,
                 "total_loss": total_loss,
                 "fool_rate": fool_rate.item(),
                 "student_pred_mean": student_pred.mean().item(),

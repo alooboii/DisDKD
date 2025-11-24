@@ -344,6 +344,7 @@ class Trainer:
         fool_rate_meter = AverageMeter()
         student_pred_meter = AverageMeter()
         match_loss_meter = AverageMeter()
+        diversity_loss_meter = AverageMeter()
 
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch} [Phase 2]", leave=False)
 
@@ -387,6 +388,7 @@ class Trainer:
                     "adv_loss": f"{adv_loss_meter.avg:.4f}",
                     "fool": f"{fool_rate_meter.avg:.2%}",
                     "match": f"{match_loss_meter.avg:.4f}",
+                    "div": f"{diversity_loss_meter.avg:.4f}",
                     "S_pred": f"{student_pred_meter.avg:.2f}",
                 }
             )
@@ -396,6 +398,7 @@ class Trainer:
         losses = {
             "adversarial": adv_loss_meter.avg,
             "feature_match": match_loss_meter.avg,
+            "diversity": diversity_loss_meter.avg,
             "total": total_loss_meter.avg,
         }
         metrics = {"fool_rate": fool_rate_meter.avg}

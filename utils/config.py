@@ -117,7 +117,7 @@ def parse_args():
     parser.add_argument(
         "--disdkd_phase1_epochs",
         type=int,
-        default=3,
+        default=2,
         help="Max epochs for Phase 1 (discriminator warmup)",
     )
     parser.add_argument(
@@ -129,7 +129,7 @@ def parse_args():
     parser.add_argument(
         "--disdkd_phase1_min",
         type=int,
-        default=2,
+        default=1,
         help="Min epochs before early transition from Phase 1",
     )
     parser.add_argument(
