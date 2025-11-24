@@ -407,7 +407,13 @@ class DisDKD(nn.Module):
         combined = torch.cat([teacher_hidden, student_hidden], dim=0)
         mean = combined.mean(dim=(0, 2, 3), keepdim=True)
         std = combined.var(dim=(0, 2, 3), keepdim=True, unbiased=False).sqrt() + 1e-6
-        teacher_norm = (teacher_hidden - mean) / std
+
+        # Detach shared stats for the teacher branch so feature targets stay fixed
+        # with respect to student activations during matching.
+        mean_detached = mean.detach()
+        std_detached = std.detach()
+
+        teacher_norm = (teacher_hidden - mean_detached) / std_detached
         student_norm = (student_hidden - mean) / std
         return teacher_norm, student_norm
 
