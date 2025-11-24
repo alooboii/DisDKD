@@ -93,7 +93,7 @@ class FeatureDiscriminator(nn.Module):
     def _init_weights(self):
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                nn.init.xavier_normal_(module.weight, gain=0.01)
+                nn.init.xavier_normal_(module.weight, gain=0.005)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
             elif isinstance(module, nn.Conv2d):
@@ -563,6 +563,11 @@ class DisDKD(nn.Module):
             # Normalize / add noise so discriminator cannot rely on scale shortcuts
             teacher_hidden = self._preprocess_hidden(teacher_hidden, add_noise=True)
             student_hidden = self._preprocess_hidden(student_hidden)
+
+            # Apply shared batch normalization for fair feature matching
+            teacher_hidden, student_hidden = self._batch_normalize_pair(
+                teacher_hidden, student_hidden
+            )
 
             # Adversarial loss: student wants to be classified as teacher (1)
             student_logits = self.discriminator(student_hidden)
