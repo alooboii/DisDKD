@@ -330,6 +330,7 @@ class Trainer:
         adv_loss_meter = AverageMeter()
         fool_rate_meter = AverageMeter()
         student_pred_meter = AverageMeter()
+        match_loss_meter = AverageMeter()
 
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch} [Phase 2]", leave=False)
 
@@ -340,26 +341,41 @@ class Trainer:
             optimizer.zero_grad()
             result = self.model(inputs)
 
-            loss = result["adversarial_loss"]
+            loss = result.get("total_loss", result["adversarial_loss"])
             loss.backward()
             optimizer.step()
 
             # Update meters
-            adv_loss_meter.update(loss.item(), batch_size)
+            total_loss_meter.update(loss.item(), batch_size)
+            adv_val = result["adversarial_loss"]
+            if isinstance(adv_val, torch.Tensor):
+                adv_val = adv_val.item()
+            adv_loss_meter.update(adv_val, batch_size)
             fool_rate_meter.update(result["fool_rate"], batch_size)
             student_pred_meter.update(result["student_pred_mean"], batch_size)
+            if "feature_match_loss" in result:
+                match_val = result["feature_match_loss"]
+                if isinstance(match_val, torch.Tensor):
+                    match_val = match_val.item()
+                match_loss_meter.update(match_val, batch_size)
 
             progress_bar.set_postfix(
                 {
+                    "total": f"{total_loss_meter.avg:.4f}",
                     "adv_loss": f"{adv_loss_meter.avg:.4f}",
                     "fool": f"{fool_rate_meter.avg:.2%}",
+                    "match": f"{match_loss_meter.avg:.4f}",
                     "S_pred": f"{student_pred_meter.avg:.2f}",
                 }
             )
 
         progress_bar.close()
 
-        losses = {"adversarial": adv_loss_meter.avg, "total": adv_loss_meter.avg}
+        losses = {
+            "adversarial": adv_loss_meter.avg,
+            "feature_match": match_loss_meter.avg,
+            "total": total_loss_meter.avg,
+        }
         metrics = {"fool_rate": fool_rate_meter.avg}
 
         return losses, metrics
