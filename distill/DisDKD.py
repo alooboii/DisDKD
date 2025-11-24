@@ -59,17 +59,32 @@ class FeatureDiscriminator(nn.Module):
     def __init__(self, hidden_channels):
         super(FeatureDiscriminator, self).__init__()
 
+        # Shallow spatial processing to keep receptive field without overfitting
+        self.spatial = nn.Sequential(
+            nn.Conv2d(
+                hidden_channels,
+                hidden_channels,
+                kernel_size=3,
+                padding=1,
+                groups=hidden_channels,
+                bias=False,
+            ),
+            nn.BatchNorm2d(hidden_channels),
+            nn.ReLU(inplace=True),
+        )
+
         self.global_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
 
         # Deliberately shallow head with high dropout to avoid overpowering
-        # the generator during warmup.
+        # the generator during warmup. Multi-scale pooling doubles channel dim.
         self.discriminator = nn.Sequential(
             nn.Flatten(),
             nn.Dropout(0.5),
-            nn.Linear(hidden_channels, hidden_channels // 2),
+            nn.Linear(hidden_channels * 2, hidden_channels),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
-            nn.Linear(hidden_channels // 2, 1),
+            nn.Linear(hidden_channels, 1),
             # No Sigmoid - returns logits
         )
 
@@ -83,7 +98,10 @@ class FeatureDiscriminator(nn.Module):
                     nn.init.zeros_(module.bias)
 
     def forward(self, x):
-        pooled = self.global_pool(x)
+        spatial = self.spatial(x)
+        pooled_avg = self.global_pool(spatial)
+        pooled_max = self.max_pool(spatial)
+        pooled = torch.cat([pooled_avg, pooled_max], dim=1)
         output = self.discriminator(pooled)
         return output  # Returns logits
 
@@ -140,6 +158,7 @@ class DisDKD(nn.Module):
 
         self.teacher_layer = teacher_layer
         self.student_layer = student_layer
+        self.phase2_layers_to_train = None
 
         # Freeze teacher parameters (always frozen)
         for param in self.teacher.parameters():
@@ -203,6 +222,8 @@ class DisDKD(nn.Module):
             self._unfreeze_discriminator()
             self._unfreeze_teacher_regressor()
 
+            self.phase2_layers_to_train = None
+
             # Ensure dropout/batchnorm behave correctly while training discriminator
             self.discriminator.train()
             self.teacher_regressor.train()
@@ -217,6 +238,7 @@ class DisDKD(nn.Module):
             self._freeze_teacher_regressor()
             self._unfreeze_student_regressor()
             layers_to_train = self._unfreeze_student_up_to_layer_g()
+            self.phase2_layers_to_train = layers_to_train
 
             # Keep frozen modules in eval mode so dropout does not corrupt logits
             self.discriminator.eval()
@@ -300,6 +322,18 @@ class DisDKD(nn.Module):
             else:
                 module.eval()
 
+    def refresh_phase2_train_eval(self):
+        """Re-apply Phase 2 train/eval modes to avoid accidental overrides."""
+        if self.phase2_layers_to_train is None:
+            return
+
+        self.discriminator.eval()
+        self.teacher_regressor.eval()
+        self.student_regressor.train()
+        self.teacher.eval()
+        self.student.eval()
+        self._set_student_train_mode_up_to_layer_g(self.phase2_layers_to_train)
+
     def _freeze_student_regressor(self):
         for param in self.student_regressor.parameters():
             param.requires_grad = False
@@ -363,14 +397,19 @@ class DisDKD(nn.Module):
         if not self.normalize_hidden:
             return hidden
 
-        # Normalize using batch + spatial statistics per channel to preserve
-        # inter-sample differences while preventing global scale shortcuts.
-        B, C, H, W = hidden.shape
-        flat = hidden.view(B, C, H * W)
-        mean = flat.mean(dim=(0, 2), keepdim=True)
-        std = flat.std(dim=(0, 2), keepdim=True, unbiased=False) + 1e-6
-        normalized = (flat - mean) / std
-        return normalized.view_as(hidden)
+        # Instance-style normalization to avoid cross-sample leakage.
+        mean = hidden.mean(dim=(2, 3), keepdim=True)
+        std = hidden.var(dim=(2, 3), keepdim=True, unbiased=False).sqrt() + 1e-6
+        return (hidden - mean) / std
+
+    def _batch_normalize_pair(self, teacher_hidden, student_hidden):
+        """Apply shared batch normalization stats before feature matching."""
+        combined = torch.cat([teacher_hidden, student_hidden], dim=0)
+        mean = combined.mean(dim=(0, 2, 3), keepdim=True)
+        std = combined.var(dim=(0, 2, 3), keepdim=True, unbiased=False).sqrt() + 1e-6
+        teacher_norm = (teacher_hidden - mean) / std
+        student_norm = (student_hidden - mean) / std
+        return teacher_norm, student_norm
 
     def _preprocess_hidden(self, hidden, add_noise=False):
         if add_noise and self.feature_noise_std > 0:
@@ -514,6 +553,9 @@ class DisDKD(nn.Module):
         # Normalize / add noise so discriminator cannot rely on scale shortcuts
         teacher_hidden = self._preprocess_hidden(teacher_hidden, add_noise=True)
         student_hidden = self._preprocess_hidden(student_hidden)
+        teacher_hidden, student_hidden = self._batch_normalize_pair(
+            teacher_hidden, student_hidden
+        )
 
         # Adversarial loss: student wants to be classified as teacher (1)
         student_logits = self.discriminator(student_hidden)
@@ -522,7 +564,9 @@ class DisDKD(nn.Module):
 
         feature_match_loss = torch.tensor(0.0, device=x.device)
         if self.phase2_match_weight > 0:
-            feature_match_loss = F.mse_loss(student_hidden, teacher_hidden)
+            feature_match_loss = F.mse_loss(
+                student_hidden, teacher_hidden, reduction="sum"
+            ) / batch_size
         total_loss = (
             self.adversarial_weight * adversarial_loss
             + self.phase2_match_weight * feature_match_loss

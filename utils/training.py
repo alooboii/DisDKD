@@ -121,8 +121,8 @@ class Trainer:
         phase2_max = getattr(args, "disdkd_phase2_epochs", 7)
         phase1_min = getattr(args, "disdkd_phase1_min", 2)
         phase2_min = getattr(args, "disdkd_phase2_min", 3)
-        disc_acc_threshold = getattr(args, "disdkd_disc_acc_threshold", 0.95)
-        fool_rate_threshold = getattr(args, "disdkd_fool_rate_threshold", 0.85)
+        disc_acc_threshold = getattr(args, "disdkd_disc_acc_threshold", 0.75)
+        fool_rate_threshold = getattr(args, "disdkd_fool_rate_threshold", 0.75)
 
         # Learning rates per phase
         phase1_lr = getattr(args, "disdkd_phase1_lr", 1e-3)
@@ -228,7 +228,7 @@ class Trainer:
         self.model.discard_adversarial_components()
         self.model.set_phase(3)
         optimizer = self.model.get_phase3_optimizer(
-            lr=phase3_lr, weight_decay=args.weight_decay
+            lr=phase3_lr, weight_decay=args.weight_decay * 50
         )
         scheduler = StepLR(optimizer, step_size=args.step_size, gamma=args.lr_decay)
 
@@ -335,6 +335,9 @@ class Trainer:
 
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch} [Phase 2]", leave=False)
 
+        if hasattr(self.model, "refresh_phase2_train_eval"):
+            self.model.refresh_phase2_train_eval()
+
         for inputs, _ in progress_bar:
             inputs = inputs.to(self.device)
             batch_size = inputs.size(0)
@@ -383,7 +386,11 @@ class Trainer:
 
     def _train_epoch_phase3(self, train_loader, optimizer, epoch):
         """Train full student with DKD for one epoch (Phase 3)."""
-        self.model.train()
+        # Keep the frozen teacher in eval mode while only the student trains
+        if hasattr(self.model, "teacher"):
+            self.model.teacher.eval()
+        if hasattr(self.model, "student"):
+            self.model.student.train()
 
         ce_loss_meter = AverageMeter()
         dkd_loss_meter = AverageMeter()
