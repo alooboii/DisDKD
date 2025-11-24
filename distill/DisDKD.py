@@ -225,6 +225,7 @@ class DisDKD(nn.Module):
         if phase == 1:
             # Freeze: entire student backbone
             # Train: discriminator, teacher_regressor, student_regressor
+            self.phase2_layers_to_train = None
             self._freeze_student_completely()
             self._unfreeze_student_regressor()
             self._unfreeze_discriminator()
