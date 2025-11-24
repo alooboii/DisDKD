@@ -93,7 +93,7 @@ def parse_args():
     parser.add_argument(
         "--disdkd_phase2_match_weight",
         type=float,
-        default=2.0,
+        default=0.0,
         help="Weight for auxiliary feature matching loss during Phase 2",
     )
     parser.add_argument(
@@ -101,6 +101,12 @@ def parse_args():
         type=float,
         default=0.0,
         help="Gradient penalty weight for discriminator (0.0 to disable)",
+    )
+    parser.add_argument(
+        "--disdkd_diversity_weight",
+        type=float,
+        default=0.1,
+        help="Weight for feature diversity regularization during Phase 2",
     )
 
     # DKD hyperparameters
@@ -117,7 +123,7 @@ def parse_args():
     parser.add_argument(
         "--disdkd_phase2_epochs",
         type=int,
-        default=5,
+        default=6,
         help="Max epochs for Phase 2 (adversarial feature alignment)",
     )
     parser.add_argument(
@@ -129,19 +135,19 @@ def parse_args():
     parser.add_argument(
         "--disdkd_phase2_min",
         type=int,
-        default=2,
+        default=4,
         help="Min epochs before early transition from Phase 2",
     )
     parser.add_argument(
         "--disdkd_disc_acc_threshold",
         type=float,
-        default=0.85,
+        default=0.8,
         help="Discriminator accuracy threshold for Phase 1 early exit",
     )
     parser.add_argument(
         "--disdkd_fool_rate_threshold",
         type=float,
-        default=0.8,
+        default=0.88,
         help="Fool rate threshold for Phase 2 early exit",
     )
     parser.add_argument(
@@ -359,6 +365,7 @@ def print_training_config(args):
         )
         print(
             f"Regularization: gradient_penalty={args.disdkd_gradient_penalty}, "
+            f"diversity_weight={args.disdkd_diversity_weight}, "
             f"phase3_mixup={'on' if args.disdkd_phase3_mixup else 'off'}"
         )
         print(f"\nPhase 1 (Discriminator Warmup):")

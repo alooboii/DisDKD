@@ -65,6 +65,7 @@ def create_distillation_model(args, teacher, student, num_classes: int):
             phase2_match_weight=args.disdkd_phase2_match_weight,
             adversarial_weight=args.disdkd_adversarial_weight,
             gradient_penalty_weight=args.disdkd_gradient_penalty,
+            diversity_weight=args.disdkd_diversity_weight,
         ),
         "FitNet": lambda: FitNet(
             teacher,

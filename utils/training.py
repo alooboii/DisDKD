@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, StepLR
 from tqdm import tqdm
 
 from utils.utils import accuracy, AverageMeter
@@ -120,11 +120,11 @@ class Trainer:
 
         # Phase boundaries
         phase1_max = getattr(args, "disdkd_phase1_epochs", 3)
-        phase2_max = getattr(args, "disdkd_phase2_epochs", 7)
+        phase2_max = getattr(args, "disdkd_phase2_epochs", 6)
         phase1_min = getattr(args, "disdkd_phase1_min", 2)
-        phase2_min = getattr(args, "disdkd_phase2_min", 3)
-        disc_acc_threshold = getattr(args, "disdkd_disc_acc_threshold", 0.75)
-        fool_rate_threshold = getattr(args, "disdkd_fool_rate_threshold", 0.75)
+        phase2_min = getattr(args, "disdkd_phase2_min", 4)
+        disc_acc_threshold = getattr(args, "disdkd_disc_acc_threshold", 0.8)
+        fool_rate_threshold = getattr(args, "disdkd_fool_rate_threshold", 0.88)
 
         # Learning rates per phase
         phase1_lr = getattr(args, "disdkd_phase1_lr", 1e-3)
@@ -149,6 +149,9 @@ class Trainer:
         phase2_optimizer = self.model.get_phase2_optimizer(
             lr=phase2_lr, weight_decay=args.weight_decay
         )
+        phase2_lr_warmup_epochs = 2
+        for param_group in phase2_optimizer.param_groups:
+            param_group["lr"] = phase2_lr * 0.1
 
         phase1_epochs_run = 0
         phase2_epochs_run = 0
@@ -189,6 +192,17 @@ class Trainer:
             else:
                 # Phase 2 step
                 self.model.set_phase(2)
+
+                if phase2_epochs_run < phase2_lr_warmup_epochs:
+                    warmup_progress = (phase2_epochs_run + 1) / phase2_lr_warmup_epochs
+                    current_lr = phase2_lr * (0.1 + 0.9 * warmup_progress)
+                    for param_group in phase2_optimizer.param_groups:
+                        param_group["lr"] = current_lr
+                    print(f"  Phase 2 LR warmup: {current_lr:.6f}")
+                else:
+                    for param_group in phase2_optimizer.param_groups:
+                        param_group["lr"] = phase2_lr
+
                 losses, metrics = self._train_epoch_phase2(
                     train_loader, phase2_optimizer, global_epoch
                 )
@@ -230,9 +244,10 @@ class Trainer:
             lr=phase3_lr, weight_decay=args.weight_decay * 5
         )
         remaining_epochs = total_epochs - global_epoch
-        scheduler = CosineAnnealingLR(
+        scheduler = CosineAnnealingWarmRestarts(
             optimizer,
-            T_max=remaining_epochs,
+            T_0=5,
+            T_mult=1,
             eta_min=phase3_lr * 0.01,
         )
         print(f"Phase 3 will run for {remaining_epochs} epochs")
@@ -251,7 +266,7 @@ class Trainer:
             self.loss_tracker.log_epoch(global_epoch, "train", losses, train_acc)
             self.loss_tracker.log_epoch(global_epoch, "val", val_losses, val_acc)
 
-            scheduler.step()
+            scheduler.step(epoch)
 
             elapsed = time.time() - start_time
             print(
@@ -342,6 +357,7 @@ class Trainer:
         fool_rate_meter = AverageMeter()
         student_pred_meter = AverageMeter()
         match_loss_meter = AverageMeter()
+        diversity_loss_meter = AverageMeter()
 
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch} [Phase 2]", leave=False)
 
@@ -375,11 +391,14 @@ class Trainer:
             adv_loss_meter.update(adv_val, batch_size)
             fool_rate_meter.update(result["fool_rate"], batch_size)
             student_pred_meter.update(result["student_pred_mean"], batch_size)
-            if "feature_match_loss" in result:
-                match_val = result["feature_match_loss"]
-                if isinstance(match_val, torch.Tensor):
-                    match_val = match_val.item()
-                match_loss_meter.update(match_val, batch_size)
+            match_val = result.get("feature_match_loss", 0.0)
+            if isinstance(match_val, torch.Tensor):
+                match_val = match_val.item()
+            match_loss_meter.update(match_val, batch_size)
+            diversity_val = result.get("diversity_loss", 0.0)
+            if isinstance(diversity_val, torch.Tensor):
+                diversity_val = diversity_val.item()
+            diversity_loss_meter.update(diversity_val, batch_size)
 
             progress_bar.set_postfix(
                 {
@@ -387,6 +406,7 @@ class Trainer:
                     "adv_loss": f"{adv_loss_meter.avg:.4f}",
                     "fool": f"{fool_rate_meter.avg:.2%}",
                     "match": f"{match_loss_meter.avg:.4f}",
+                    "div": f"{diversity_loss_meter.avg:.4f}",
                     "S_pred": f"{student_pred_meter.avg:.2f}",
                 }
             )
@@ -396,6 +416,7 @@ class Trainer:
         losses = {
             "adversarial": adv_loss_meter.avg,
             "feature_match": match_loss_meter.avg,
+            "diversity": diversity_loss_meter.avg,
             "total": total_loss_meter.avg,
         }
         metrics = {"fool_rate": fool_rate_meter.avg}
