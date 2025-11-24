@@ -285,8 +285,6 @@ class Trainer:
 
     def _train_epoch_phase1(self, train_loader, optimizer, epoch):
         """Train discriminator for one epoch (Phase 1)."""
-        self.model.train()
-
         disc_loss_meter = AverageMeter()
         disc_acc_meter = AverageMeter()
         teacher_pred_meter = AverageMeter()
@@ -329,8 +327,6 @@ class Trainer:
 
     def _train_epoch_phase2(self, train_loader, optimizer, epoch):
         """Train student (up to layer G) for one epoch (Phase 2)."""
-        self.model.train()
-
         adv_loss_meter = AverageMeter()
         fool_rate_meter = AverageMeter()
         student_pred_meter = AverageMeter()

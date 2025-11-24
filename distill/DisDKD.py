@@ -180,6 +180,11 @@ class DisDKD(nn.Module):
             self._unfreeze_discriminator()
             self._unfreeze_teacher_regressor()
 
+            # Ensure dropout/batchnorm behave correctly while training discriminator
+            self.discriminator.train()
+            self.teacher_regressor.train()
+            self.student_regressor.eval()
+
         elif phase == 2:
             # Freeze: discriminator, teacher_regressor, student layers after G
             # Train: student (up to G), student_regressor
@@ -187,6 +192,11 @@ class DisDKD(nn.Module):
             self._freeze_teacher_regressor()
             self._unfreeze_student_regressor()
             self._unfreeze_student_up_to_layer_g()
+
+            # Keep frozen modules in eval mode so dropout does not corrupt logits
+            self.discriminator.eval()
+            self.teacher_regressor.eval()
+            self.student_regressor.train()
 
         elif phase == 3:
             # Train: entire student
