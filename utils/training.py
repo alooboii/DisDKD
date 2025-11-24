@@ -383,7 +383,11 @@ class Trainer:
 
     def _train_epoch_phase3(self, train_loader, optimizer, epoch):
         """Train full student with DKD for one epoch (Phase 3)."""
-        self.model.train()
+        # Keep the frozen teacher in eval mode while only the student trains
+        if hasattr(self.model, "teacher"):
+            self.model.teacher.eval()
+        if hasattr(self.model, "student"):
+            self.model.student.train()
 
         ce_loss_meter = AverageMeter()
         dkd_loss_meter = AverageMeter()
