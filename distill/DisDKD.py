@@ -210,6 +210,16 @@ class DisDKD(nn.Module):
         if phase == 1:
             # Phase 1: Adversarial - start in discriminator mode
             self.set_discriminator_mode()
+            # Print student parameter info once
+            self.set_generator_mode()  # Temporarily switch to see what gets trained
+            trainable = sum(p.numel() for p in self.student.parameters() if p.requires_grad)
+            total = sum(p.numel() for p in self.student.parameters())
+            guided_layer_key = self.student_layer.split(".")[0]
+            print(
+                f"Phase 1: Student trainable params: {trainable:,} / {total:,} "
+                f"({100*trainable/total:.1f}%) - up to {guided_layer_key}"
+            )
+            self.set_discriminator_mode()  # Switch back to discriminator mode
 
         elif phase == 2:
             # Phase 2: DKD - train entire student
@@ -258,14 +268,6 @@ class DisDKD(nn.Module):
             layer_name = name.split(".")[0]
             if layer_name in layers_to_unfreeze:
                 param.requires_grad = True
-
-        # Count trainable params for logging
-        trainable = sum(p.numel() for p in self.student.parameters() if p.requires_grad)
-        total = sum(p.numel() for p in self.student.parameters())
-        print(
-            f"Phase 2: Student trainable params: {trainable:,} / {total:,} "
-            f"({100*trainable/total:.1f}%) - up to {guided_layer_key}"
-        )
 
     def _freeze_student_regressor(self):
         for param in self.student_regressor.parameters():
