@@ -225,7 +225,7 @@ class Trainer:
         return self.best_val_acc
 
     # ==========================================================
-    # Phase 1 — training
+    # Phase 1 — training (GAN equilibrium + MMD logging)
     # ==========================================================
 
     def _train_epoch_phase1(self, loader, epoch, k_disc):
@@ -235,11 +235,12 @@ class Trainer:
         disc_acc_sum = 0.0
         gen_loss_sum = 0.0
         fool_rate_sum = 0.0
+        mmd_d_sum = 0.0
+        mmd_g_sum = 0.0
+
         num_batches = 0
 
-        pbar = tqdm(
-            loader, desc=f"Epoch {epoch} [Phase 1] Train", ncols=120, leave=False
-        )
+        pbar = tqdm(loader, desc=f"Epoch {epoch} [Phase 1] Train", ncols=120, leave=False)
 
         for x, _ in pbar:
             x = x.to(self.device)
@@ -251,6 +252,7 @@ class Trainer:
 
             batch_disc_loss = 0.0
             batch_disc_acc = 0.0
+            batch_mmd_d = 0.0
 
             for _ in range(k_disc):
                 self.optimizer_D.zero_grad()
@@ -260,10 +262,11 @@ class Trainer:
 
                 batch_disc_loss += out["disc_loss"].item()
                 batch_disc_acc += out["disc_accuracy"]
+                batch_mmd_d += out["mmd"]
 
-            # Average over k_disc steps
             batch_disc_loss /= k_disc
             batch_disc_acc /= k_disc
+            batch_mmd_d /= k_disc
 
             # ------------------ Generator ------------------
             self.distill_model.set_generator_mode()
@@ -275,20 +278,23 @@ class Trainer:
             out_g["gen_loss"].backward()
             self.optimizer_G.step()
 
-            # Accumulate
+            # ------------------ Accumulate ------------------
             disc_loss_sum += batch_disc_loss
             disc_acc_sum += batch_disc_acc
             gen_loss_sum += out_g["gen_loss"].item()
             fool_rate_sum += out_g["fool_rate"]
+            mmd_d_sum += batch_mmd_d
+            mmd_g_sum += out_g["mmd"]
+
             num_batches += 1
 
-            # Update progress bar with running averages
             pbar.set_postfix(
                 {
                     "D_loss": f"{disc_loss_sum/num_batches:.4f}",
                     "D_acc": f"{100*disc_acc_sum/num_batches:.1f}%",
                     "G_loss": f"{gen_loss_sum/num_batches:.4f}",
                     "Fool": f"{100*fool_rate_sum/num_batches:.1f}%",
+                    "MMD_G": f"{mmd_g_sum/num_batches:.3f}",
                 }
             )
 
@@ -299,17 +305,27 @@ class Trainer:
             "disc_acc": 100 * disc_acc_sum / num_batches,
             "gen_loss": gen_loss_sum / num_batches,
             "fool_rate": 100 * fool_rate_sum / num_batches,
+            "mmd_d": mmd_d_sum / num_batches,
+            "mmd_g": mmd_g_sum / num_batches,
         }
 
     # ==========================================================
-    # Phase 1 — validation (diagnostic only)
+    # Phase 1 — validation (diagnostic only, read-only)
     # ==========================================================
-
-    def _validate_epoch_phase1(self, loader, epoch):
-        self.distill_model.eval()  # overall eval
     
-        disc_loss_sum = disc_acc_sum = 0.0
-        gen_loss_sum = fool_rate_sum = 0.0
+    
+    def _validate_epoch_phase1(self, loader, epoch):
+        self.distill_model.eval()
+        self.distill_model.discriminator.eval()
+        self.distill_model.student.eval()
+    
+        disc_loss_sum = 0.0
+        disc_acc_sum = 0.0
+        gen_loss_sum = 0.0
+        fool_rate_sum = 0.0
+        mmd_d_sum = 0.0
+        mmd_g_sum = 0.0
+    
         num_batches = 0
     
         pbar = tqdm(loader, desc=f"Epoch {epoch} [Phase 1] Val", ncols=120, leave=False)
@@ -318,39 +334,38 @@ class Trainer:
             for x, _ in pbar:
                 x = x.to(self.device)
     
-                # ----- Discriminator diagnostic -----
-                self.distill_model.set_discriminator_mode()
-                self.distill_model.discriminator.eval()
-                self.distill_model.student.eval()
                 d = self.distill_model(x, mode="discriminator")
-    
-                # ----- Generator diagnostic -----
-                self.distill_model.set_generator_mode()
-                self.distill_model.discriminator.eval()
-                self.distill_model.student.eval()  # keep eval for val consistency
                 g = self.distill_model(x, mode="generator")
     
                 disc_loss_sum += d["disc_loss"].item()
-                disc_acc_sum  += d["disc_accuracy"]
-                gen_loss_sum  += g["gen_loss"].item()
+                disc_acc_sum += d["disc_accuracy"]
+                gen_loss_sum += g["gen_loss"].item()
                 fool_rate_sum += g["fool_rate"]
+                mmd_d_sum += d["mmd"]
+                mmd_g_sum += g["mmd"]
+    
                 num_batches += 1
     
-                pbar.set_postfix({
-                    "D_loss": f"{disc_loss_sum/num_batches:.4f}",
-                    "D_acc":  f"{100*disc_acc_sum/num_batches:.1f}%",
-                    "G_loss": f"{gen_loss_sum/num_batches:.4f}",
-                    "Fool":   f"{100*fool_rate_sum/num_batches:.1f}%",
-                })
+                pbar.set_postfix(
+                    {
+                        "D_loss": f"{disc_loss_sum/num_batches:.4f}",
+                        "D_acc": f"{100*disc_acc_sum/num_batches:.1f}%",
+                        "G_loss": f"{gen_loss_sum/num_batches:.4f}",
+                        "Fool": f"{100*fool_rate_sum/num_batches:.1f}%",
+                        "MMD_G": f"{mmd_g_sum/num_batches:.3f}",
+                    }
+                )
     
         pbar.close()
+    
         return {
             "disc_loss": disc_loss_sum / num_batches,
-            "disc_acc":  100 * disc_acc_sum / num_batches,
-            "gen_loss":  gen_loss_sum / num_batches,
+            "disc_acc": 100 * disc_acc_sum / num_batches,
+            "gen_loss": gen_loss_sum / num_batches,
             "fool_rate": 100 * fool_rate_sum / num_batches,
+            "mmd_d": mmd_d_sum / num_batches,
+            "mmd_g": mmd_g_sum / num_batches,
         }
-
 
     # ==========================================================
     # Phase 2 — DKD

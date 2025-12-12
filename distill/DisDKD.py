@@ -197,6 +197,26 @@ class DisDKD(nn.Module):
         print(f"Discriminator: {count_params(self.discriminator)*1e-6:.3f}M params")
         print(f"DKD parameters: alpha={alpha}, beta={beta}, temperature={temperature}")
 
+    def compute_mmd(self, x, y, sigma=1.0):
+        """
+        Computes Maximum Mean Discrepancy (MMD) with RBF kernel.
+        x, y: [B, C]
+        """
+        xx = torch.matmul(x, x.t())
+        yy = torch.matmul(y, y.t())
+        xy = torch.matmul(x, y.t())
+
+        rx = (xx.diag().unsqueeze(0).expand_as(xx))
+        ry = (yy.diag().unsqueeze(0).expand_as(yy))
+
+        K_xx = torch.exp(-(rx.t() + rx - 2 * xx) / (2 * sigma ** 2))
+        K_yy = torch.exp(-(ry.t() + ry - 2 * yy) / (2 * sigma ** 2))
+        K_xy = torch.exp(-(rx.t() + ry - 2 * xy) / (2 * sigma ** 2))
+
+        mmd = K_xx.mean() + K_yy.mean() - 2 * K_xy.mean()
+        return mmd
+
+
     def set_phase(self, phase):
         """
         Set training phase and configure requires_grad accordingly.
@@ -417,6 +437,10 @@ class DisDKD(nn.Module):
 
         # Match spatial dimensions
         student_hidden = self.match_spatial_dimensions(student_hidden, teacher_hidden)
+        with torch.no_grad():
+            t_pool = F.adaptive_avg_pool2d(teacher_hidden, 1).flatten(1)
+            s_pool = F.adaptive_avg_pool2d(student_hidden, 1).flatten(1)
+            mmd = self.compute_mmd(s_pool, t_pool)
 
         # Discriminator predictions (logits)
         teacher_logits = self.discriminator(teacher_hidden)
@@ -448,6 +472,7 @@ class DisDKD(nn.Module):
             "disc_accuracy": disc_accuracy.item(),
             "teacher_pred_mean": teacher_pred.mean().item(),
             "student_pred_mean": student_pred.mean().item(),
+            "mmd": mmd.item(),
         }
 
     def generator_step(self, x):
@@ -477,6 +502,12 @@ class DisDKD(nn.Module):
         # Match spatial dimensions
         student_hidden = self.match_spatial_dimensions(student_hidden, teacher_hidden)
 
+        # ---- MMD (generator-side, allow grad) ----
+        t_pool = F.adaptive_avg_pool2d(teacher_hidden, 1).flatten(1)
+        s_pool = F.adaptive_avg_pool2d(student_hidden, 1).flatten(1)
+        mmd = self.compute_mmd(s_pool, t_pool)
+
+
         # Adversarial loss: student wants to be classified as teacher (1)
         student_logits = self.discriminator(student_hidden)
         real_labels = torch.ones(batch_size, 1, device=x.device)
@@ -495,6 +526,7 @@ class DisDKD(nn.Module):
             "gen_loss": gen_loss,
             "fool_rate": fool_rate.item(),
             "student_pred_mean": student_pred.mean().item(),
+            "mmd": mmd.item()
         }
 
     def forward_phase2(self, x, targets):
