@@ -15,6 +15,7 @@ def main():
     args = parse_args()
     print(f"Using seed ===> {args.seed}")
     set_seed(args.seed)
+    
 
     # Validate domain configuration for domain-based datasets
     if args.tsne_plot:
