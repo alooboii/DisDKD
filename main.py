@@ -9,7 +9,7 @@ from utils.utils import set_seed
 from utils.config import parse_args, validate_and_setup_domains, print_training_config
 from utils.training import Trainer
 from utils.logging import LossTracker
-
+from utils.tsne import run_tsne_visualization
 
 def main():
     args = parse_args()
@@ -17,6 +17,15 @@ def main():
     set_seed(args.seed)
 
     # Validate domain configuration for domain-based datasets
+    if args.tsne_plot:
+        try:
+            run_tsne_visualization(args)
+            print("\nExiting after t-SNE plot generation.")
+        except (ValueError, FileNotFoundError, Exception) as e:
+            print(f"Error during t-SNE visualization: {e}")
+            print("Ensure that the checkpoint file exists and the configuration is correct.")
+        return
+    
     if args.dataset.upper() in [
         "VLCS",
         "PACS",
