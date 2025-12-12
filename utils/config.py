@@ -191,6 +191,45 @@ def parse_args():
         help="LR decay factor after every step-size",
     )
 
+    tsne_group = parser.add_argument_group("t-SNE Visualization")
+    tsne_group.add_argument(
+        "--tsne_plot",
+        action="store_true",
+        help="If set, runs t-SNE visualization on a saved model checkpoint.",
+    )
+    tsne_group.add_argument(
+        "--tsne_epoch",
+        type=int,
+        default=None,
+        help="Epoch number of the checkpoint to load for t-SNE. Required if --tsne_plot is used.",
+    )
+    tsne_group.add_argument(
+        "--tsne_model",
+        type=str,
+        default="student",
+        choices=["teacher", "student"],
+        help="Which model (teacher or student) to use for t-SNE features.",
+    )
+    tsne_group.add_argument(
+        "--tsne_data_split",
+        type=str,
+        default="val",
+        choices=["train", "val"],
+        help="Which data split (train or val) to use for t-SNE features.",
+    )
+    tsne_group.add_argument(
+        "--tsne_n_samples",
+        type=int,
+        default=500,
+        help="Number of samples to randomly sample from the data split for t-SNE.",
+    )
+    tsne_group.add_argument(
+        "--tsne_output_file",
+        type=str,
+        default="tsne_plot.png",
+        help="Filename for the saved t-SNE plot (will be saved in --save_dir).",
+    )
+
     # Loss weights
     parser.add_argument("--alpha", type=float, default=1.0, help="CE loss weight")
     parser.add_argument("--beta", type=float, default=0.4, help="KD loss weight")
