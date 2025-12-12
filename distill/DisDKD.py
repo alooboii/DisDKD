@@ -146,6 +146,7 @@ class DisDKD(nn.Module):
         alpha=1.0,
         beta=8.0,
         temperature=4.0,
+        mmd_weight= 1.0,
     ):
         super(DisDKD, self).__init__()
         self.teacher = teacher
@@ -154,7 +155,7 @@ class DisDKD(nn.Module):
         self.alpha = alpha
         self.beta = beta
         self.temperature = temperature
-
+        self.mmd_weight = mmd_weight
         self.teacher_layer = teacher_layer
         self.student_layer = student_layer
 
@@ -476,58 +477,53 @@ class DisDKD(nn.Module):
         }
 
     def generator_step(self, x):
-        """
-        Generator (student) training step for Phase 1 (adversarial).
-        Train student (up to layer G) to fool frozen discriminator.
-        Call this with generator mode enabled (use set_generator_mode()).
-
-        Returns dict with gen_loss and metrics.
-        """
         batch_size = x.size(0)
 
-        # Forward pass
+        # Forward
         with torch.no_grad():
             _ = self.teacher(x)
-        _ = self.student(x)  # Student forward (partial grad flow)
+        _ = self.student(x)
 
         # Extract features
-        teacher_feat = self.teacher_hooks.features.get(self.teacher_layer)
-        student_feat = self.student_hooks.features.get(self.student_layer)
+        teacher_feat = self.teacher_hooks.features[self.teacher_layer]
+        student_feat = self.student_hooks.features[self.student_layer]
 
-        # Project to hidden space
+        # Project
         with torch.no_grad():
             teacher_hidden = self.teacher_regressor(teacher_feat)
         student_hidden = self.student_regressor(student_feat)
 
-        # Match spatial dimensions
+        # Spatial match
         student_hidden = self.match_spatial_dimensions(student_hidden, teacher_hidden)
 
-        # ---- MMD (generator-side, allow grad) ----
+        # ---- MMD (GRADIENT FLOWS TO STUDENT) ----
         t_pool = F.adaptive_avg_pool2d(teacher_hidden, 1).flatten(1)
         s_pool = F.adaptive_avg_pool2d(student_hidden, 1).flatten(1)
         mmd = self.compute_mmd(s_pool, t_pool)
 
-
-        # Adversarial loss: student wants to be classified as teacher (1)
+        # ---- Adversarial loss ----
         student_logits = self.discriminator(student_hidden)
         real_labels = torch.ones(batch_size, 1, device=x.device)
-        gen_loss = self.bce_loss(student_logits, real_labels)
+        adv_loss = self.bce_loss(student_logits, real_labels)
 
-        # Compute fool rate
+        # ---- FINAL GENERATOR LOSS ----
+        gen_loss = adv_loss + self.mmd_weight * mmd
+
+        # Metrics
         with torch.no_grad():
             student_pred = torch.sigmoid(student_logits)
             fool_rate = (student_pred > 0.5).float().mean()
 
-        # Clear hooks
         self.teacher_hooks.clear()
         self.student_hooks.clear()
 
         return {
             "gen_loss": gen_loss,
+            "adv_loss": adv_loss.item(),
+            "mmd": mmd.item(),
             "fool_rate": fool_rate.item(),
-            "student_pred_mean": student_pred.mean().item(),
-            "mmd": mmd.item()
         }
+
 
     def forward_phase2(self, x, targets):
         """
