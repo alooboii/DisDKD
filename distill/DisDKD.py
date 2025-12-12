@@ -99,8 +99,7 @@ class FeatureDiscriminator(nn.Module):
 
         self.discriminator = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(hidden_channels, hidden_channels // 2, bias=False),
-            nn.BatchNorm1d(hidden_channels // 2),
+            nn.Linear(hidden_channels, hidden_channels // 2, bias=True),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Linear(hidden_channels // 2, 1)
         )
