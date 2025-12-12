@@ -698,10 +698,10 @@ class Trainer:
         from utils.model_factory import create_distillation_model
 
         return create_distillation_model(
+            self.args,
             self.teacher,
             self.student,
-            self.method,
-            self.args
+            self.num_classes
         ).to(self.device)
 
     def _setup_optimizers(self):
