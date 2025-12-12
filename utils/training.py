@@ -133,7 +133,7 @@ class Trainer:
 			print(f"\n{'='*70}")
 			print(f"Epoch {epoch}/{phase1_epochs} [Phase 1] Summary")
 			print(f"{'='*70}")
-			print(f"mmd_weight = " {base*ramp:.4f})
+			print(f"mmd_weight = {base*ramp:.4f}")
 			print(
 				f"Train | D_loss: {train_stats['disc_loss']:.4f}, "
 				f"D_acc: {train_stats['disc_acc']:.2f}%, "
