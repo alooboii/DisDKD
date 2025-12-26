@@ -643,7 +643,6 @@ class Trainer:
         progress_bar.set_postfix(postfix)
 
     def _get_average_losses(self, meters):
-        """Get average losses from meters."""
-        losses = {key: meter.avg for key, meter in meters.items() if key != "accuracy"}
-        accuracy_val = meters["accuracy"].avg
-        return losses, accuracy_val
+        """Return a dict of average losses/metrics (excluding accuracy)."""
+        return {key: meter.avg for key, meter in meters.items() if key != "accuracy"}
+
