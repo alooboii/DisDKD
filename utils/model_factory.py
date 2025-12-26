@@ -58,11 +58,12 @@ def create_distillation_model(args, teacher, student, num_classes: int):
             args.student_layer,
             teacher_channels,
             student_channels,
-            len(args._train_dataset),
+            n_data=len(
+                args._train_dataset
+            ),  # number of TRAIN samples (memory bank size)
             feat_dim=args.feat_dim,
             temperature=args.crd_temperature,
             momentum=args.crd_momentum,
-            n_data=args.crd_n_negatives,
         ),
     }
 
