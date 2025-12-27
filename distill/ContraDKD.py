@@ -291,8 +291,9 @@ class ContraDKD(nn.Module):
             t_pred = self.discriminator(t_proj)
             s_pred = self.discriminator(s_proj.detach())
 
-            real_lbl = torch.ones(batch_size, 1, device=x.device)
-            fake_lbl = torch.zeros(batch_size, 1, device=x.device)
+            # Instead of hard 0/1 labels, use smoothed versions
+            real_lbl = torch.ones(batch_size, 1, device=x.device) * 0.9  # 0.9 instead of 1.0
+            fake_lbl = torch.ones(batch_size, 1, device=x.device) * 0.1  # 0.1 instead of 0.0
 
             disc_loss = 0.5 * (
                 self.bce_loss(t_pred, real_lbl) + self.bce_loss(s_pred, fake_lbl)
