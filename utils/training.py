@@ -44,7 +44,7 @@ class Trainer:
         # Use args if provided, else default to 50% of epochs
         self.phase1_epochs = (
             args.disdkd_phase1_epochs
-            if hasattr(args, "disdkd_phase1_epochs")
+            if hasattr(args, "disdkd_phase1_epochs") and args.disdkd_phase1_epochs is not None
             else args.epochs // 2
         )
         if args.method != "DisDKD":
@@ -118,7 +118,7 @@ class Trainer:
             # --- DisDKD Logic ---
             if self.args.method == "DisDKD":
                 # Check for Phase Switch
-                if self.args.method == "DisDKD" and self.current_phase == 1 and epoch >= self.phase1_epochs:
+                if self.current_phase == 1 and epoch >= self.phase1_epochs:
                     self._switch_to_phase2(epoch)
 
                 if self.current_phase == 1:
@@ -192,8 +192,9 @@ class Trainer:
 
         progress_bar = tqdm(train_loader, desc=f"Ep {epoch} (Ph1: Adv)", leave=False)
 
-        for batch_idx, (inputs, _) in enumerate(progress_bar):  # Targets ignored
+        for batch_idx, (inputs, targets) in enumerate(progress_bar):
             inputs = inputs.to(self.device)
+            targets = targets.to(self.device)
             batch_size = inputs.size(0)
 
             # 1. Train Discriminator
@@ -210,12 +211,18 @@ class Trainer:
             gen_out["gen_loss"].backward()
             self.generator_optimizer.step()
 
+            # 3. Compute accuracy (no gradients needed)
+            with torch.no_grad():
+                student_logits = self.model.student(inputs)
+                acc = accuracy(student_logits, targets)[0]
+
             # Update Meters
             meters["discriminator"].update(disc_out["disc_loss"].item(), batch_size)
             meters["generator"].update(gen_out["gen_loss"].item(), batch_size)
             meters["adversarial"].update(gen_out["adv_loss"], batch_size)
             meters["disc_acc"].update(disc_out["disc_accuracy"], batch_size)
             meters["fool_rate"].update(gen_out["fool_rate"], batch_size)
+            meters["accuracy"].update(acc.item(), batch_size)
 
             if batch_idx % self.args.print_freq == 0:
                 progress_bar.set_postfix(
@@ -223,11 +230,12 @@ class Trainer:
                         "D_Loss": f"{meters['discriminator'].avg:.4f}",
                         "D_Acc": f"{meters['disc_acc'].avg:.2%}",
                         "Fool": f"{meters['fool_rate'].avg:.2%}",
+                        "Acc": f"{meters['accuracy'].avg:.2f}%",
                     }
                 )
 
         progress_bar.close()
-        return self._get_average_losses(meters), 0.0
+        return self._get_average_losses(meters), meters["accuracy"].avg
 
     def _train_epoch_phase2(self, train_loader, epoch):
         """DisDKD Phase 2: Standard DKD Training."""
@@ -244,8 +252,7 @@ class Trainer:
             # Forward
             outputs = self.model(inputs, targets)
 
-            # Loss: Alpha * CE + Beta * NCKD + Gamma * TCKD (handled inside compute_dkd_loss)
-            # We add explicit CE here like standard distillation
+            # Loss: Alpha * CE + DKD (which internally = dkd_alpha * TCKD + dkd_beta * NCKD)
             ce_loss = self.criterion(outputs["student_logits"], targets)
             total_loss = self.args.alpha * ce_loss + outputs["dkd_loss"]
 
@@ -454,6 +461,7 @@ class Trainer:
                 "adversarial": AverageMeter(),
                 "disc_acc": AverageMeter(),
                 "fool_rate": AverageMeter(),
+                "accuracy": AverageMeter(),  # Added for Phase 1
             }
         else:
             # Standard metrics for Phase 2 and Baseline methods
