@@ -44,7 +44,8 @@ class Trainer:
         # Use args if provided, else default to 50% of epochs
         self.phase1_epochs = (
             args.disdkd_phase1_epochs
-            if hasattr(args, "disdkd_phase1_epochs") and args.disdkd_phase1_epochs is not None
+            if hasattr(args, "disdkd_phase1_epochs")
+            and args.disdkd_phase1_epochs is not None
             else args.epochs // 2
         )
         if args.method != "DisDKD":
@@ -144,23 +145,47 @@ class Trainer:
             # Logging
             # Get current learning rate
             if self.args.method == "DisDKD":
-                current_lr = self.dkd_optimizer.param_groups[0]['lr'] if self.current_phase == 2 else self.generator_optimizer.param_groups[0]['lr']
+                current_lr = (
+                    self.dkd_optimizer.param_groups[0]["lr"]
+                    if self.current_phase == 2
+                    else self.generator_optimizer.param_groups[0]["lr"]
+                )
             else:
-                current_lr = self.student_optimizer.param_groups[0]['lr']
+                current_lr = self.student_optimizer.param_groups[0]["lr"]
 
-            self.loss_tracker.log_epoch(epoch, "train", train_losses, train_acc, current_lr)
+            self.loss_tracker.log_epoch(
+                epoch, "train", train_losses, train_acc, current_lr
+            )
             self.loss_tracker.log_epoch(epoch, "val", val_losses, val_acc, current_lr)
 
             # Print epoch summary
             elapsed = time.time() - start_time
-            phase_str = (
-                f"Phase {self.current_phase}"
-                if self.args.method == "DisDKD"
-                else "Standard"
-            )
-            print(
-                f"Epoch {epoch} [{phase_str}]: Train {train_acc:.2f}%, Val {val_acc:.2f}%, Time {elapsed:.1f}s"
-            )
+
+            # Phase-specific printing
+            if self.args.method == "DisDKD" and self.current_phase == 1:
+                # Phase 1: Show all adversarial metrics
+                print(
+                    f"Epoch {epoch} [Phase 1 - Adversarial]: "
+                    f"D_Loss={train_losses['discriminator']:.4f}, "
+                    f"G_Loss={train_losses['generator']:.4f}, "
+                    f"Adv_Loss={train_losses['adversarial']:.4f}, "
+                    f"D_Acc={train_losses['disc_acc']:.2%}, "
+                    f"Fool={train_losses['fool_rate']:.2%}, "
+                    f"Val_Acc={val_acc:.2f}%, "
+                    f"Time={elapsed:.1f}s"
+                )
+            else:
+                # Phase 2 or standard methods: Show all losses and accuracies
+                loss_str = ", ".join(
+                    [f"{k}={v:.4f}" for k, v in train_losses.items() if v > 0]
+                )
+                print(
+                    f"Epoch {epoch}: "
+                    f"{loss_str}, "
+                    f"Train_Acc={train_acc:.2f}%, "
+                    f"Val_Acc={val_acc:.2f}%, "
+                    f"Time={elapsed:.1f}s"
+                )
 
             # Save best model
             if val_acc > best_acc:
@@ -192,9 +217,8 @@ class Trainer:
 
         progress_bar = tqdm(train_loader, desc=f"Ep {epoch} (Ph1: Adv)", leave=False)
 
-        for batch_idx, (inputs, targets) in enumerate(progress_bar):
+        for batch_idx, (inputs, _) in enumerate(progress_bar):
             inputs = inputs.to(self.device)
-            targets = targets.to(self.device)
             batch_size = inputs.size(0)
 
             # 1. Train Discriminator
@@ -204,6 +228,10 @@ class Trainer:
             disc_out["disc_loss"].backward()
             self.discriminator_optimizer.step()
 
+            # Update discriminator metrics
+            meters["discriminator"].update(disc_out["disc_loss"].item(), batch_size)
+            meters["disc_acc"].update(disc_out["disc_accuracy"], batch_size)
+
             # 2. Train Generator
             self.model.set_generator_mode()
             self.generator_optimizer.zero_grad()
@@ -211,31 +239,25 @@ class Trainer:
             gen_out["gen_loss"].backward()
             self.generator_optimizer.step()
 
-            # 3. Compute accuracy (no gradients needed)
-            with torch.no_grad():
-                student_logits = self.model.student(inputs)
-                acc = accuracy(student_logits, targets)[0]
-
-            # Update Meters
-            meters["discriminator"].update(disc_out["disc_loss"].item(), batch_size)
+            # Update generator metrics
             meters["generator"].update(gen_out["gen_loss"].item(), batch_size)
             meters["adversarial"].update(gen_out["adv_loss"], batch_size)
-            meters["disc_acc"].update(disc_out["disc_accuracy"], batch_size)
             meters["fool_rate"].update(gen_out["fool_rate"], batch_size)
-            meters["accuracy"].update(acc.item(), batch_size)
 
+            # Live tqdm updates: D_Loss, D_Acc after discriminator step; G_Loss, Fool after generator step
             if batch_idx % self.args.print_freq == 0:
                 progress_bar.set_postfix(
                     {
                         "D_Loss": f"{meters['discriminator'].avg:.4f}",
                         "D_Acc": f"{meters['disc_acc'].avg:.2%}",
+                        "G_Loss": f"{meters['generator'].avg:.4f}",
                         "Fool": f"{meters['fool_rate'].avg:.2%}",
-                        "Acc": f"{meters['accuracy'].avg:.2f}%",
                     }
                 )
 
         progress_bar.close()
-        return self._get_average_losses(meters), meters["accuracy"].avg
+        # Phase 1 doesn't track classification accuracy in training
+        return self._get_average_losses(meters), 0.0
 
     def _train_epoch_phase2(self, train_loader, epoch):
         """DisDKD Phase 2: Standard DKD Training."""
@@ -266,6 +288,7 @@ class Trainer:
             meters["dkd"].update(outputs["dkd_loss"].item(), inputs.size(0))
             meters["accuracy"].update(acc.item(), inputs.size(0))
 
+            # Live tqdm updates: Total loss and accuracy
             if batch_idx % self.args.print_freq == 0:
                 progress_bar.set_postfix(
                     {
@@ -275,6 +298,13 @@ class Trainer:
                 )
 
         progress_bar.close()
+
+        # Print all component-wise losses at epoch end
+        print(
+            f"  Phase 2 Components: Total={meters['total'].avg:.4f}, "
+            f"CE={meters['ce'].avg:.4f}, DKD={meters['dkd'].avg:.4f}"
+        )
+
         return self._get_average_losses(meters), meters["accuracy"].avg
 
     def _train_epoch_standard(self, train_loader, epoch):
@@ -355,6 +385,7 @@ class Trainer:
                 if k in meters:
                     meters[k].update(v, inputs.size(0))
 
+            # Live tqdm updates: Total loss and accuracy
             if batch_idx % self.args.print_freq == 0:
                 progress_bar.set_postfix(
                     {
@@ -379,7 +410,7 @@ class Trainer:
                 # Direct call to student submodule avoids Phase 1 logic that requires 'mode'.
                 if self.args.method == "DisDKD" and self.current_phase == 2:
                     outputs = self.model.student(inputs)
-                elif hasattr(self.model, 'student'):
+                elif hasattr(self.model, "student"):
                     outputs = self.model.student(inputs)
                 else:
                     outputs = self.model(inputs)
@@ -461,7 +492,6 @@ class Trainer:
                 "adversarial": AverageMeter(),
                 "disc_acc": AverageMeter(),
                 "fool_rate": AverageMeter(),
-                "accuracy": AverageMeter(),  # Added for Phase 1
             }
         else:
             # Standard metrics for Phase 2 and Baseline methods
