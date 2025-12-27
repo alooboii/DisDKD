@@ -59,6 +59,7 @@ def create_distillation_model(args, teacher, student, num_classes: int):
             alpha=args.dkd_alpha,  # Explicitly map TCKD weight
             beta=args.dkd_beta,  # Explicitly map NCKD weight
             temperature=args.tau,
+            # mmd_weight removed
         ),
         "FitNet": lambda: FitNet(
             teacher,
@@ -142,10 +143,15 @@ def print_model_parameters(model, method_name: str):
 
     # DisDKD specific info
     if method_name == "DisDKD":
-        print(f"\nThree-Phase Training:")
-        print(f"  Phase 1: Discriminator + Teacher Regressor")
-        print(f"  Phase 2: Student (up to {model.student_layer}) + Student Regressor")
-        print(f"  Phase 3: Full Student with DKD")
+        print(f"\nTwo-Phase Training:")
+        print(f"  Phase 1 (Adversarial):")
+        print(f"    - Discriminator & Teacher Regressor (Optimization D)")
+        print(
+            f"    - Partial Student (up to {model.student_layer}) & Student Regressor (Optimization G)"
+        )
+        print(f"  Phase 2 (DKD):")
+        print(f"    - Full Student (Optimization DKD)")
+        print(f"    - Adversarial components discarded")
 
-    print(f"\nTotal trainable: {total_trainable:,} parameters")
+    print(f"\nTotal trainable (Phase 1 Init): {total_trainable:,} parameters")
     print("=" * 50)

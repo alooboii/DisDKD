@@ -7,6 +7,7 @@ class LossTracker:
         self.log_path = Path(log_path)
         self.method = method
 
+        # Standard headers common to all methods (Phase 2 uses these)
         self.headers = ["epoch", "phase", "total", "ce", "kd", "accuracy"]
 
         method_headers = {
@@ -14,17 +15,17 @@ class LossTracker:
             "CRD": ["contrastive"],
             "DKD": ["tckd", "nckd"],
             "DisDKD": [
-                "dkd",
-                "discriminator",
-                "adversarial",
-                "disc_accuracy",
-                "fool_rate",
+                "dkd",  # Phase 2
+                "discriminator",  # Phase 1
+                "generator",  # Phase 1 (Added)
+                "adversarial",  # Phase 1
+                "disc_acc",  # Phase 1 (Renamed from disc_accuracy to match Trainer)
+                "fool_rate",  # Phase 1
             ],
         }
         if method in method_headers:
             self.headers.extend(method_headers[method])
 
-        # Optional but highly recommended:
         self.headers.append("lr")
 
         self._write_headers()
@@ -37,7 +38,6 @@ class LossTracker:
     @staticmethod
     def _to_float(x):
         try:
-            # handles torch scalars too
             return float(x)
         except Exception:
             return 0.0
@@ -61,11 +61,16 @@ class LossTracker:
             "DisDKD": [
                 "dkd",
                 "discriminator",
+                "generator",
                 "adversarial",
-                "disc_accuracy",
+                "disc_acc",
                 "fool_rate",
             ],
         }
+
+        # This loop handles the sparse updates nicely.
+        # In Phase 1: 'dkd' will be 0.0
+        # In Phase 2: 'discriminator' etc. will be 0.0
         for k in method_losses.get(self.method, []):
             row.append(self._to_float(losses.get(k, 0.0)))
 

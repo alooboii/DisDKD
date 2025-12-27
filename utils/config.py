@@ -99,6 +99,12 @@ def parse_args():
         default=1e-4,
         help="Discriminator learning rate",
     )
+    parser.add_argument(
+        "--disdkd_phase1_epochs",
+        type=int,
+        default=None,
+        help="Number of epochs for DisDKD Phase 1 (adversarial training). Defaults to half of total epochs.",
+    )
     parser.add_argument("--dkd_alpha", type=float, default=1.0, help="DKD TCKD weight")
     parser.add_argument("--dkd_beta", type=float, default=8.0, help="DKD NCKD weight")
     parser.add_argument(
