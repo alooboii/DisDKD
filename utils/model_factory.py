@@ -1,4 +1,3 @@
-from distill import *
 import torch.nn as nn
 from pretraining import Pretraining
 from distill.DisDKD import DisDKD
@@ -57,8 +56,8 @@ def create_distillation_model(args, teacher, student, num_classes: int):
             teacher_channels=teacher_channels,
             student_channels=student_channels,
             hidden_channels=args.hidden_channels,
-            alpha=args.dkd_alpha,
-            beta=args.dkd_beta,
+            alpha=args.dkd_alpha,  # Explicitly map TCKD weight
+            beta=args.dkd_beta,  # Explicitly map NCKD weight
             temperature=args.tau,
         ),
         "FitNet": lambda: FitNet(
@@ -78,7 +77,10 @@ def create_distillation_model(args, teacher, student, num_classes: int):
             teacher_channels,
             student_channels,
             len(args._train_dataset),
-            args.feat_dim,
+            feat_dim=args.feat_dim,
+            temperature=args.crd_temperature,
+            momentum=args.crd_momentum,
+            n_negatives=args.crd_n_negatives,
         ),
     }
 

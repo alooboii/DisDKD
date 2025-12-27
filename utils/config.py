@@ -80,97 +80,52 @@ def parse_args():
         help="Hidden channels for feature transformation",
     )
 
-    # DKD hyperparameters
-    parser.add_argument("--dkd_alpha", type=float, default=1.0, help="DKD TCKD weight")
-    parser.add_argument("--dkd_beta", type=float, default=8.0, help="DKD NCKD weight")
-
-    # DisDKD Phase Configuration
-    parser.add_argument(
-        "--disdkd_phase1_epochs",
-        type=int,
-        default=3,
-        help="Max epochs for Phase 1 (discriminator warmup)",
-    )
-    parser.add_argument(
-        "--disdkd_phase2_epochs",
-        type=int,
-        default=7,
-        help="Max epochs for Phase 2 (adversarial feature alignment)",
-    )
-    parser.add_argument(
-        "--disdkd_phase1_min",
-        type=int,
-        default=2,
-        help="Min epochs before early transition from Phase 1",
-    )
-    parser.add_argument(
-        "--disdkd_phase2_min",
-        type=int,
-        default=3,
-        help="Min epochs before early transition from Phase 2",
-    )
-    parser.add_argument(
-        "--disdkd_disc_acc_threshold",
-        type=float,
-        default=0.95,
-        help="Discriminator accuracy threshold for Phase 1 early exit",
-    )
-    parser.add_argument(
-        "--disdkd_fool_rate_threshold",
-        type=float,
-        default=0.85,
-        help="Fool rate threshold for Phase 2 early exit",
-    )
-    parser.add_argument(
-        "--disdkd_phase1_lr",
-        type=float,
-        default=1e-3,
-        help="Learning rate for Phase 1 (discriminator)",
-    )
-    parser.add_argument(
-        "--disdkd_phase2_lr",
-        type=float,
-        default=1e-3,
-        help="Learning rate for Phase 2 (adversarial)",
-    )
-    parser.add_argument(
-        "--disdkd_phase3_lr",
-        type=float,
-        default=1e-4,
-        help="Learning rate for Phase 3 (DKD fine-tuning)",
-    )
+    # Method-specific hyperparameters
     parser.add_argument(
         "--disdkd_adversarial_weight",
         type=float,
-        default=1.0,
-        help="Weight for adversarial loss in Phase 2",
+        default=0.01,
+        help="DisDKD adversarial weight (gamma)",
     )
-    parser.add_argument(
-        "--disdkd_k_disc_steps",
-        type=int,
-        default=1,
-        help="Number of discriminator training steps per batch in Phase 1 (typically 1-2)",
-    )
-    parser.add_argument(
-        "--disdkd_mmd_weight",
-        type=float,
-        default=0.05,
-        help="Base weight for MMD term in Phase 1 generator loss (will be ramped up over phase1 epochs)",
-    )
-
-
-    # Legacy DisDKD args (kept for backward compatibility)
     parser.add_argument(
         "--disc_lr_multiplier",
         type=float,
         default=1.0,
-        help="[DEPRECATED] Discriminator LR multiplier",
+        help="Discriminator LR multiplier",
     )
     parser.add_argument(
         "--discriminator_lr",
         type=float,
-        default=1e-3,
-        help="[DEPRECATED] Use --disdkd_phase1_lr instead",
+        default=1e-4,
+        help="Discriminator learning rate",
+    )
+    parser.add_argument("--dkd_alpha", type=float, default=1.0, help="DKD TCKD weight")
+    parser.add_argument("--dkd_beta", type=float, default=8.0, help="DKD NCKD weight")
+    parser.add_argument(
+        "--fitnet_stage1_epochs",
+        type=int,
+        default=0,
+        help="Number of epochs for FitNet Stage 1 (Hint only)",
+    )
+
+    # CRD-specific hyperparameters
+    parser.add_argument(
+        "--crd_temperature",
+        type=float,
+        default=0.07,
+        help="Temperature for CRD contrastive loss",
+    )
+    parser.add_argument(
+        "--crd_momentum",
+        type=float,
+        default=0.5,
+        help="Momentum for CRD memory bank updates",
+    )
+    parser.add_argument(
+        "--crd_n_negatives",
+        type=int,
+        default=4096,
+        help="Number of negative samples for CRD",
     )
 
     # Training hyperparameters
@@ -261,32 +216,6 @@ def validate_and_setup_domains(args):
     )
 
 
-def validate_disdkd_config(args):
-    """Validate DisDKD configuration and print warnings."""
-    if args.method != "DisDKD":
-        return
-
-    total_epochs = args.epochs
-    phase1 = args.disdkd_phase1_epochs
-
-    # Check if phases fit within total epochs
-    min_phase2_epochs = 10
-    if phase1 + min_phase2_epochs > total_epochs:
-        print(f"\nWarning: DisDKD phase configuration may be tight!")
-        print(f"  Total epochs: {total_epochs}")
-        print(f"  Phase 1 (adversarial): {phase1}")
-        print(f"  Remaining for Phase 2 (DKD): {total_epochs - phase1}")
-        print(f"  Recommended minimum Phase 2 epochs: {min_phase2_epochs}")
-        print(f"  Consider increasing --epochs or reducing Phase 1 duration.\n")
-
-    # Validate k_disc_steps
-    if args.disdkd_k_disc_steps < 1 or args.disdkd_k_disc_steps > 5:
-        print(
-            f"Warning: disdkd_k_disc_steps={args.disdkd_k_disc_steps} is unusual. "
-            f"Typical values are 1-2."
-        )
-
-
 def print_training_config(args):
     """Print complete training configuration."""
     print(f"\n=== Training Configuration ===")
@@ -309,38 +238,37 @@ def print_training_config(args):
 
     print(f"Epochs: {args.epochs}, Batch size: {args.batch_size}")
     print(f"Optimizer: {args.optimizer}, LR: {args.lr}")
-    print(
-        f"Loss weights - α (CE): {args.alpha}, β (KD): {args.beta}, γ (method): {args.gamma}"
-    )
+    print(f"Loss weights - α: {args.alpha}, β: {args.beta}, γ: {args.gamma}")
+    print(f"Temperature: {args.tau}")
 
+    # Method-specific configurations
     if args.method == "DKD":
         print(f"DKD weights - TCKD α: {args.dkd_alpha}, NCKD β: {args.dkd_beta}")
 
     elif args.method == "DisDKD":
-        print(f"\n--- DisDKD Two-Phase Configuration (Interleaved Training) ---")
+        print(f"DisDKD DKD weights - TCKD α: {args.dkd_alpha}, NCKD β: {args.dkd_beta}")
+        print(f"DisDKD Adversarial weight (γ): {args.disdkd_adversarial_weight}")
         print(
-            f"Feature layers - Teacher: {args.teacher_layer}, Student: {args.student_layer}"
+            f"Discriminator LR: {args.discriminator_lr}, multiplier: {args.disc_lr_multiplier}"
         )
-        print(f"Hidden channels: {args.hidden_channels}")
-        print(f"DKD weights - TCKD α: {args.dkd_alpha}, NCKD β: {args.dkd_beta}")
-        print(f"Temperature: {args.tau}")
-        print(f"\nPhase 1 (Adversarial - Interleaved D/G Training):")
-        print(f"  Epochs: {args.disdkd_phase1_epochs}")
-        print(f"  Discriminator steps per batch: {args.disdkd_k_disc_steps}")
-        print(f"  Generator steps per batch: 1")
-        print(f"  Discriminator LR: {args.disdkd_phase1_lr}")
-        print(f"  Generator LR: {args.disdkd_phase2_lr}")
-        print(f"  Student trains: layers up to and including '{args.student_layer}'")
-        print(f"  MMD base weight: {getattr(args, 'disdkd_mmd_weight', 0.05)} (ramped over Phase 1)")
-        print(f"\nPhase 2 (DKD Fine-tuning):")
-        remaining = args.epochs - args.disdkd_phase1_epochs
-        print(f"  Epochs: {remaining}")
-        print(f"  LR: {args.disdkd_phase3_lr}")
-        print(f"  Loss: α*CE + β*DKD (adversarial components discarded)")
-        print(f"  CE weight (α): {args.alpha}, DKD weight (β): {args.beta}")
 
-        # Validate configuration
-        validate_disdkd_config(args)
+    elif args.method == "CRD":
+        print(f"CRD Temperature: {args.crd_temperature}")
+        print(f"CRD Momentum: {args.crd_momentum}")
+        print(f"CRD Negative samples: {args.crd_n_negatives}")
+        print(f"CRD Feature dimension: {args.feat_dim}")
+        print(
+            f"CRD Teacher layer: {args.teacher_layer}, Student layer: {args.student_layer}"
+        )
 
-    print(f"\nTemperature: {args.tau}")
+    elif args.method == "FitNet":
+        print(
+            f"FitNet Teacher layer: {args.teacher_layer}, Student layer: {args.student_layer}"
+        )
+        if args.fitnet_stage1_epochs > 0:
+            print(f"FitNet Stage 1 epochs (Hint only): {args.fitnet_stage1_epochs}")
+            print(
+                f"FitNet Stage 2 epochs (Task): {args.epochs - args.fitnet_stage1_epochs}"
+            )
+
     print("=" * 40)
