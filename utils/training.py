@@ -253,15 +253,26 @@ class Trainer:
             inputs, targets = batch_data
             inputs, targets = inputs.to(self.device), targets.to(self.device)
 
-            # Step 1: Train Discriminator
-            self.model.set_training_mode("discriminator")
-            self.discriminator_optimizer.zero_grad()
+            train_disc = True
+            
+            if self.args.method == "ContraDKD":
+                train_disc = (batch_idx % 3 == 0)  # Every 3rd batch
+        
+            if train_disc:
+                # Step 1: Train Discriminator
+                self.model.set_training_mode("discriminator")
+                self.discriminator_optimizer.zero_grad()
 
-            disc_result = self.model(inputs, targets)
-            disc_loss = disc_result["total_disc_loss"]
+                disc_result = self.model(inputs, targets)
+                disc_loss = disc_result["total_disc_loss"]
 
-            disc_loss.backward()
-            self.discriminator_optimizer.step()
+                disc_loss.backward()
+                self.discriminator_optimizer.step()
+            else:
+                # Just get metrics without training
+                self.model.set_training_mode("discriminator")
+                with torch.no_grad():
+                    disc_result = self.model(inputs, targets)
 
             # Step 2: Train Student
             self.model.set_training_mode("student")
