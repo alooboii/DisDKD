@@ -385,10 +385,8 @@ class DisDKD(nn.Module):
             disc_loss = (disc_loss_real + disc_loss_fake) / 2
 
             # ADDED: Gradient penalty for stability
-            if self.use_gradient_penalty:
-                gp = self.compute_gradient_penalty(
-                    teacher_hidden.detach(), student_hidden.detach()
-                )
+            if self.use_gradient_penalty and torch.is_grad_enabled():
+                gp = self.compute_gradient_penalty(teacher_hidden.detach(), student_hidden.detach())
                 disc_loss = disc_loss + self.gp_lambda * gp
                 result["gradient_penalty"] = gp.item()
 
