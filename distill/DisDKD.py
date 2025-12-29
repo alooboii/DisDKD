@@ -238,6 +238,11 @@ class DisDKD(nn.Module):
         """
         batch_size = real_features.size(0)
 
+        # ADD THIS BLOCK
+        if real_features.shape[2:] != fake_features.shape[2:]:
+            real_features = F.adaptive_avg_pool2d(real_features, 1)
+            fake_features = F.adaptive_avg_pool2d(fake_features, 1)
+
         # Random interpolation coefficient
         alpha = torch.rand(batch_size, 1, 1, 1, device=real_features.device)
 

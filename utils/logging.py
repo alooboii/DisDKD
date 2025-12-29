@@ -19,6 +19,7 @@ class LossTracker:
                 "adversarial",
                 "disc_accuracy",
                 "fool_rate",
+                "gradient_penalty",
             ],
             "ContraDKD": [
                 "dkd",
