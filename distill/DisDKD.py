@@ -7,9 +7,7 @@ from utils.utils import get_module, count_params
 
 
 class FeatureHooks:
-    """
-    Helper class to extract intermediate features from a network using forward hooks.
-    """
+    """Helper class to extract intermediate features using forward hooks."""
 
     def __init__(self, named_layers):
         self.features = OrderedDict()
@@ -37,7 +35,7 @@ class FeatureHooks:
 
 class FeatureRegressor(nn.Module):
     """
-    Light 1x1 convolutional regressor to project features to a common hidden dimension.
+    1x1 convolutional regressor with BatchNorm for stable feature projection.
 
     Args:
         in_channels (int): Number of input channels
@@ -46,8 +44,9 @@ class FeatureRegressor(nn.Module):
 
     def __init__(self, in_channels, hidden_channels):
         super(FeatureRegressor, self).__init__()
-        self.regressor = nn.Conv2d(
-            in_channels, hidden_channels, kernel_size=1, stride=1, padding=0, bias=False
+        self.regressor = nn.Sequential(
+            nn.Conv2d(in_channels, hidden_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(hidden_channels),  # ADDED: Stabilizes feature statistics
         )
 
     def forward(self, x):
@@ -56,28 +55,35 @@ class FeatureRegressor(nn.Module):
 
 class FeatureDiscriminator(nn.Module):
     """
-    Lightweight discriminator to distinguish between teacher and student features.
+    Enhanced discriminator with spectral normalization and better activations.
 
     Args:
         hidden_channels (int): Number of channels in the hidden feature space
+        use_spectral_norm (bool): Whether to use spectral normalization
     """
 
-    def __init__(self, hidden_channels):
+    def __init__(self, hidden_channels, use_spectral_norm=True):
         super(FeatureDiscriminator, self).__init__()
 
         # Global average pooling to reduce spatial dimensions
         self.global_pool = nn.AdaptiveAvgPool2d(1)
 
-        # Simple discriminator network
+        # Helper function to apply spectral normalization
+        def maybe_sn(layer):
+            if use_spectral_norm:
+                return nn.utils.spectral_norm(layer)
+            return layer
+
+        # Enhanced discriminator with spectral norm and LeakyReLU
         self.discriminator = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(hidden_channels, hidden_channels // 2),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_channels // 2, hidden_channels // 4),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_channels // 4, 1),
+            maybe_sn(nn.Linear(hidden_channels, hidden_channels // 2)),
+            nn.LeakyReLU(0.2, inplace=True),  # CHANGED: Better for adversarial training
+            nn.Dropout(0.3),  # INCREASED: More regularization
+            maybe_sn(nn.Linear(hidden_channels // 2, hidden_channels // 4)),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(0.3),
+            maybe_sn(nn.Linear(hidden_channels // 4, 1)),
             nn.Sigmoid(),
         )
 
@@ -87,28 +93,24 @@ class FeatureDiscriminator(nn.Module):
             x (Tensor): Input features [batch_size, hidden_channels, H, W]
 
         Returns:
-            Tensor: Discriminator output [batch_size, 1] (probability of being teacher)
+            Tensor: Discriminator output [batch_size, 1]
         """
-        # Global average pooling
-        pooled = self.global_pool(x)  # [batch_size, hidden_channels, 1, 1]
-
-        # Discriminate
-        output = self.discriminator(pooled)  # [batch_size, 1]
-
+        pooled = self.global_pool(x)
+        output = self.discriminator(pooled)
         return output
 
 
 class DisDKD(nn.Module):
     """
-    Discriminator-enhanced Decoupled Knowledge Distillation.
+    Improved Discriminator-enhanced Decoupled Knowledge Distillation.
 
-    Combines DKD's decoupled logit-level distillation (TCKD + NCKD) with
-    discriminator-based feature alignment from DisKD.
-
-    Training occurs in two phases:
-    1. Discriminator phase: Train discriminator and teacher projector to distinguish
-       teacher (real=1) from student (fake=0) features
-    2. Student phase: Train student and student projector with DKD loss + adversarial loss
+    Enhancements:
+    - BatchNorm in feature regressors
+    - Spectral normalization in discriminator
+    - Label smoothing for stable training
+    - Gradient penalty for improved stability
+    - Feature normalization
+    - Adaptive discriminator training
 
     Args:
         teacher (nn.Module): Pretrained teacher network
@@ -121,6 +123,9 @@ class DisDKD(nn.Module):
         alpha (float): Weight for TCKD loss (DKD component)
         beta (float): Weight for NCKD loss (DKD component)
         temperature (float): Temperature for DKD softmax
+        use_spectral_norm (bool): Whether to use spectral normalization
+        use_gradient_penalty (bool): Whether to use gradient penalty
+        label_smoothing (float): Label smoothing factor (0.0 to 0.5)
     """
 
     def __init__(
@@ -135,6 +140,10 @@ class DisDKD(nn.Module):
         alpha=1.0,
         beta=8.0,
         temperature=4.0,
+        use_spectral_norm=True,
+        use_gradient_penalty=True,
+        label_smoothing=0.1,
+        gp_lambda=5.0,
     ):
         super(DisDKD, self).__init__()
         self.teacher = teacher
@@ -143,6 +152,11 @@ class DisDKD(nn.Module):
         self.alpha = alpha
         self.beta = beta
         self.temperature = temperature
+
+        # ADDED: Stabilization parameters
+        self.use_gradient_penalty = use_gradient_penalty
+        self.gp_lambda = gp_lambda
+        self.label_smoothing = label_smoothing
 
         # Freeze teacher parameters
         for param in self.teacher.parameters():
@@ -159,47 +173,39 @@ class DisDKD(nn.Module):
         self.teacher_layer = teacher_layer
         self.student_layer = student_layer
 
-        # Feature regressors to project to common dimension
+        # IMPROVED: Feature regressors with BatchNorm
         self.teacher_regressor = FeatureRegressor(teacher_channels, hidden_channels)
         self.student_regressor = FeatureRegressor(student_channels, hidden_channels)
 
-        # Feature discriminator
-        self.discriminator = FeatureDiscriminator(hidden_channels)
+        # IMPROVED: Discriminator with spectral normalization
+        self.discriminator = FeatureDiscriminator(hidden_channels, use_spectral_norm)
 
         # BCE loss for discriminator
         self.bce_loss = nn.BCELoss()
 
         # Track training mode
-        self.training_mode = "student"  # 'student' or 'discriminator'
+        self.training_mode = "student"
 
         print(
-            f"Teacher regressor has {count_params(self.teacher_regressor)*1e-6:.3f}M params..."
+            f"Teacher regressor: {count_params(self.teacher_regressor)*1e-6:.3f}M params"
         )
         print(
-            f"Student regressor has {count_params(self.student_regressor)*1e-6:.3f}M params..."
+            f"Student regressor: {count_params(self.student_regressor)*1e-6:.3f}M params"
         )
+        print(f"Discriminator: {count_params(self.discriminator)*1e-6:.3f}M params")
+        print(f"DKD params: α={alpha}, β={beta}, T={temperature}")
         print(
-            f"Discriminator has {count_params(self.discriminator)*1e-6:.3f}M params..."
+            f"Spectral Norm: {use_spectral_norm}, GP: {use_gradient_penalty} (λ={gp_lambda})"
         )
-        print(
-            f"DKD parameters: alpha={alpha}, beta={beta}, temperature={temperature}\n"
-        )
+        print(f"Label Smoothing: {label_smoothing}\n")
 
     def set_training_mode(self, mode):
-        """
-        Set training mode: 'student' or 'discriminator'
-
-        Args:
-            mode (str): Training mode
-        """
-        assert mode in [
-            "student",
-            "discriminator",
-        ], "Mode must be 'student' or 'discriminator'"
+        """Set training mode: 'student' or 'discriminator'"""
+        assert mode in ["student", "discriminator"], "Invalid mode"
         self.training_mode = mode
 
         if mode == "discriminator":
-            # Phase 1: Freeze student, unfreeze discriminator and teacher projector
+            # Freeze student, unfreeze discriminator + teacher projector
             for param in self.student.parameters():
                 param.requires_grad = False
             for param in self.student_regressor.parameters():
@@ -209,7 +215,7 @@ class DisDKD(nn.Module):
             for param in self.teacher_regressor.parameters():
                 param.requires_grad = True
         else:  # student mode
-            # Phase 2: Unfreeze student, freeze discriminator and teacher projector
+            # Unfreeze student, freeze discriminator + teacher projector
             for param in self.student.parameters():
                 param.requires_grad = True
             for param in self.student_regressor.parameters():
@@ -219,56 +225,74 @@ class DisDKD(nn.Module):
             for param in self.teacher_regressor.parameters():
                 param.requires_grad = False
 
-    # def match_spatial_dimensions(self, student_feat, teacher_feat):
-    #     """
-    #     Match spatial dimensions of student features to teacher features via interpolation.
+    def compute_gradient_penalty(self, real_features, fake_features):
+        """
+        Compute WGAN-GP style gradient penalty for discriminator stability.
 
-    #     Args:
-    #         student_feat (Tensor): Student features
-    #         teacher_feat (Tensor): Teacher features
+        Args:
+            real_features: Teacher features [B, C, H, W]
+            fake_features: Student features [B, C, H, W]
 
-    #     Returns:
-    #         Tensor: Student features with matched spatial dimensions
-    #     """
-    #     if student_feat.shape[2:] != teacher_feat.shape[2:]:
-    #         student_feat = F.interpolate(
-    #             student_feat,
-    #             size=teacher_feat.shape[2:],
-    #             mode="bilinear",
-    #             align_corners=False,
-    #         )
-    #     return student_feat
+        Returns:
+            Gradient penalty term
+        """
+        batch_size = real_features.size(0)
+
+        # Random interpolation coefficient
+        alpha = torch.rand(batch_size, 1, 1, 1, device=real_features.device)
+
+        # Create interpolated features
+        interpolates = alpha * real_features + (1 - alpha) * fake_features
+        interpolates.requires_grad_(True)
+
+        # Get discriminator output for interpolated features
+        disc_interpolates = self.discriminator(interpolates)
+
+        # Compute gradients
+        gradients = torch.autograd.grad(
+            outputs=disc_interpolates,
+            inputs=interpolates,
+            grad_outputs=torch.ones_like(disc_interpolates),
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True,
+        )[0]
+
+        # Flatten and compute penalty
+        gradients = gradients.view(batch_size, -1)
+        gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+
+        return gradient_penalty
 
     def compute_dkd_loss(self, logits_student, logits_teacher, target):
         """
-        Compute the Decoupled Knowledge Distillation loss (TCKD + NCKD).
+        Compute Decoupled Knowledge Distillation loss (TCKD + NCKD).
 
         Args:
-            logits_student (Tensor): Student logits
-            logits_teacher (Tensor): Teacher logits
-            target (Tensor): Ground truth labels
+            logits_student: Student logits
+            logits_teacher: Teacher logits
+            target: Ground truth labels
 
         Returns:
-            Tensor: Combined DKD loss
+            Combined DKD loss
         """
         gt_mask = self._get_gt_mask(logits_student, target)
         other_mask = self._get_other_mask(logits_student, target)
 
-        # Compute softmax probabilities
+        # Softmax with temperature
         pred_student = F.softmax(logits_student / self.temperature, dim=1)
         pred_teacher = F.softmax(logits_teacher / self.temperature, dim=1)
 
-        # Target Class Knowledge Distillation (TCKD)
+        # TCKD: Target Class Knowledge Distillation
         pred_student_tckd = self._cat_mask(pred_student, gt_mask, other_mask)
         pred_teacher_tckd = self._cat_mask(pred_teacher, gt_mask, other_mask)
-        log_pred_student_tckd = torch.log(pred_student_tckd)
+        log_pred_student_tckd = torch.log(pred_student_tckd + 1e-8)  # Add epsilon
 
-        tckd_loss = (
-            F.kl_div(log_pred_student_tckd, pred_teacher_tckd, reduction="batchmean")
-            * (self.temperature**2)
-        )
+        tckd_loss = F.kl_div(
+            log_pred_student_tckd, pred_teacher_tckd, reduction="batchmean"
+        ) * (self.temperature**2)
 
-        # Non-Target Class Knowledge Distillation (NCKD)
+        # NCKD: Non-Target Class Knowledge Distillation
         pred_teacher_nckd = F.softmax(
             logits_teacher / self.temperature - 1000.0 * gt_mask, dim=1
         )
@@ -276,88 +300,96 @@ class DisDKD(nn.Module):
             logits_student / self.temperature - 1000.0 * gt_mask, dim=1
         )
 
-        nckd_loss = (
-            F.kl_div(log_pred_student_nckd, pred_teacher_nckd, reduction="batchmean")
-            * (self.temperature**2)
-        )
+        nckd_loss = F.kl_div(
+            log_pred_student_nckd, pred_teacher_nckd, reduction="batchmean"
+        ) * (self.temperature**2)
 
-        # Combined DKD loss
         return self.alpha * tckd_loss + self.beta * nckd_loss
 
     def _get_gt_mask(self, logits, target):
         """Create mask for ground truth class."""
         target = target.reshape(-1)
-        mask = torch.zeros_like(logits).scatter_(1, target.unsqueeze(1), 1).bool()
-        return mask
+        return torch.zeros_like(logits).scatter_(1, target.unsqueeze(1), 1).bool()
 
     def _get_other_mask(self, logits, target):
         """Create mask for non-ground truth classes."""
         target = target.reshape(-1)
-        mask = torch.ones_like(logits).scatter_(1, target.unsqueeze(1), 0).bool()
-        return mask
+        return torch.ones_like(logits).scatter_(1, target.unsqueeze(1), 0).bool()
 
     def _cat_mask(self, t, mask1, mask2):
         """Concatenate masked probabilities."""
         t1 = (t * mask1).sum(dim=1, keepdims=True)
         t2 = (t * mask2).sum(1, keepdims=True)
-        rt = torch.cat([t1, t2], dim=1)
-        return rt
+        return torch.cat([t1, t2], dim=1)
 
     def forward(self, x, targets):
         """
-        Forward pass computing outputs and losses based on training mode.
+        Forward pass with improved feature processing.
 
         Args:
-            x (Tensor): Input tensor
-            targets (Tensor): Ground truth labels
+            x: Input tensor
+            targets: Ground truth labels
 
         Returns:
-            dict: Dictionary containing logits and losses based on training mode
+            Dictionary containing logits and losses
         """
         batch_size = x.size(0)
 
-        # Forward pass through teacher and student networks
+        # Forward pass
         with torch.no_grad():
             teacher_logits = self.teacher(x)
         student_logits = self.student(x)
 
-        # Extract intermediate features
+        # Extract features
         teacher_feat = self.teacher_hooks.features.get(self.teacher_layer)
         student_feat = self.student_hooks.features.get(self.student_layer)
 
         if teacher_feat is None or student_feat is None:
             raise ValueError(
-                f"Missing features for layers: {self.teacher_layer} or {self.student_layer}"
+                f"Missing features for {self.teacher_layer} or {self.student_layer}"
             )
 
-        # Project features to common hidden dimension
+        # Project features to common dimension
         teacher_hidden = self.teacher_regressor(teacher_feat)
         student_hidden = self.student_regressor(student_feat)
 
-        # Match spatial dimensions
-        # student_hidden = self.match_spatial_dimensions(student_hidden, teacher_hidden)
+        # ADDED: Normalize features for more stable training
+        teacher_hidden = F.normalize(teacher_hidden, dim=1)
+        student_hidden = F.normalize(student_hidden, dim=1)
 
         result = {"teacher_logits": teacher_logits, "student_logits": student_logits}
 
         if self.training_mode == "discriminator":
-            # Phase 1: Train discriminator to distinguish teacher (real=1) from student (fake=0)
+            # ========== DISCRIMINATOR TRAINING PHASE ==========
 
-            # Discriminator predictions
+            # Get discriminator predictions
             teacher_pred = self.discriminator(teacher_hidden)
             student_pred = self.discriminator(student_hidden.detach())
 
-            # Real/fake labels
-            real_labels = torch.ones(batch_size, 1, device=x.device)
-            fake_labels = torch.zeros(batch_size, 1, device=x.device)
+            # IMPROVED: Label smoothing for stability
+            real_labels = torch.ones(batch_size, 1, device=x.device) * (
+                1.0 - self.label_smoothing
+            )
+            fake_labels = (
+                torch.ones(batch_size, 1, device=x.device) * self.label_smoothing
+            )
 
             # Discriminator loss
             disc_loss_real = self.bce_loss(teacher_pred, real_labels)
             disc_loss_fake = self.bce_loss(student_pred, fake_labels)
             disc_loss = (disc_loss_real + disc_loss_fake) / 2
 
+            # ADDED: Gradient penalty for stability
+            if self.use_gradient_penalty:
+                gp = self.compute_gradient_penalty(
+                    teacher_hidden.detach(), student_hidden.detach()
+                )
+                disc_loss = disc_loss + self.gp_lambda * gp
+                result["gradient_penalty"] = gp.item()
+
             # Calculate discriminator accuracy
-            teacher_correct = (teacher_pred > 0.5).float()  # Should predict 1 (real)
-            student_correct = (student_pred <= 0.5).float()  # Should predict 0 (fake)
+            teacher_correct = (teacher_pred > 0.5).float()
+            student_correct = (student_pred <= 0.5).float()
             disc_accuracy = (
                 (teacher_correct.sum() + student_correct.sum()) / (2 * batch_size)
             ).item()
@@ -367,17 +399,17 @@ class DisDKD(nn.Module):
             result["total_disc_loss"] = disc_loss
 
         else:  # student mode
-            # Phase 2: Train student with DKD loss + adversarial loss
+            # ========== STUDENT TRAINING PHASE ==========
 
-            # Compute DKD loss (TCKD + NCKD)
+            # DKD loss (logit-level distillation)
             dkd_loss = self.compute_dkd_loss(student_logits, teacher_logits, targets)
 
-            # Adversarial loss: student wants to fool discriminator (be classified as teacher)
+            # Adversarial loss (feature-level alignment)
             student_pred = self.discriminator(student_hidden)
             real_labels = torch.ones(batch_size, 1, device=x.device)
             adversarial_loss = self.bce_loss(student_pred, real_labels)
 
-            # Calculate fool rate (how many times student fooled discriminator)
+            # Calculate fool rate
             fool_rate = (student_pred > 0.5).float().mean().item()
 
             result["dkd"] = dkd_loss.item()
@@ -386,7 +418,7 @@ class DisDKD(nn.Module):
             result["total_student_loss"] = adversarial_loss
             result["method_specific_loss"] = dkd_loss
 
-        # Clear features for next forward pass
+        # Clear features
         self.teacher_hooks.clear()
         self.student_hooks.clear()
 
@@ -397,12 +429,12 @@ class DisDKD(nn.Module):
         Get separate optimizers for student and discriminator.
 
         Args:
-            student_lr (float): Learning rate for student
-            discriminator_lr (float): Learning rate for discriminator
-            weight_decay (float): Weight decay
+            student_lr: Learning rate for student
+            discriminator_lr: Learning rate for discriminator
+            weight_decay: Weight decay
 
         Returns:
-            tuple: (student_optimizer, discriminator_optimizer)
+            (student_optimizer, discriminator_optimizer)
         """
         student_params = list(self.student.parameters()) + list(
             self.student_regressor.parameters()
@@ -412,11 +444,12 @@ class DisDKD(nn.Module):
             self.teacher_regressor.parameters()
         )
 
-        student_optimizer = torch.optim.Adam(
+        # Use AdamW for better regularization
+        student_optimizer = torch.optim.AdamW(
             student_params, lr=student_lr, weight_decay=weight_decay
         )
 
-        discriminator_optimizer = torch.optim.Adam(
+        discriminator_optimizer = torch.optim.AdamW(
             discriminator_params, lr=discriminator_lr, weight_decay=weight_decay
         )
 

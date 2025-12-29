@@ -51,22 +51,19 @@ class Trainer:
                 self.student_optimizer, step_size=args.step_size, gamma=args.lr_decay
             )
 
-        # --- DISDKD LOGIC ---
+        # --- DISDKD LOGIC (FIXED) ---
         elif args.method in ["DisDKD"]:
-            self.student_optimizer, self.student_scheduler = self._create_optimizer(
-                self.model
-            )
-
-            discriminator_obj = getattr(self.model, "discriminator", None)
-            if discriminator_obj is not None:
-                self.discriminator_optimizer = optim.Adam(
-                    discriminator_obj.parameters(),
-                    lr=args.discriminator_lr * args.disc_lr_multiplier,
+            # FIXED: Use DisDKD's get_optimizers() method which properly handles both optimizers
+            self.student_optimizer, self.discriminator_optimizer = (
+                self.model.get_optimizers(
+                    student_lr=args.lr,
+                    discriminator_lr=args.discriminator_lr,
                     weight_decay=args.weight_decay,
                 )
-            else:
-                self.discriminator_optimizer = None
-                print(f"Warning: {args.method} selected but no discriminator found.")
+            )
+            self.student_scheduler = StepLR(
+                self.student_optimizer, step_size=args.step_size, gamma=args.lr_decay
+            )
 
         # --- STANDARD LOGIC ---
         else:
@@ -151,12 +148,18 @@ class Trainer:
                 dkd_loss = train_losses.get("dkd", 0)
                 disc_loss = train_losses.get("discriminator", 0)
                 adv_loss = train_losses.get("adversarial", 0)
-                print(
+                gp_loss = train_losses.get("gradient_penalty", 0)
+
+                # Build log string
+                log_str = (
                     f"Epoch {epoch}: Train {train_acc:.2f}%, Val {val_acc:.2f}% | "
                     f"Disc_Acc: {disc_acc:.1f}%, Fool: {fool_rate:.1f}% | "
-                    f"DKD: {dkd_loss:.4f}, Disc: {disc_loss:.4f}, Adv: {adv_loss:.4f} | "
-                    f"Time: {elapsed:.1f}s"
+                    f"DKD: {dkd_loss:.4f}, Disc: {disc_loss:.4f}, Adv: {adv_loss:.4f}"
                 )
+                if gp_loss > 0:
+                    log_str += f", GP: {gp_loss:.4f}"
+                log_str += f" | Time: {elapsed:.1f}s"
+                print(log_str)
 
             elif self.args.method == "ContraDKD":
                 disc_acc = train_losses.get("disc_accuracy", 0) * 100
@@ -253,11 +256,20 @@ class Trainer:
             inputs, targets = batch_data
             inputs, targets = inputs.to(self.device), targets.to(self.device)
 
+            # IMPROVED: Adaptive discriminator training schedule
             train_disc = True
-            
+
             if self.args.method == "ContraDKD":
-                train_disc = (batch_idx % 3 == 0)  # Every 3rd batch
-        
+                train_disc = batch_idx % 3 == 0  # Every 3rd batch
+            elif self.args.method == "DisDKD":
+                # Adaptive schedule for DisDKD
+                if epoch < 3:
+                    train_disc = batch_idx % 2 == 0  # More frequent early
+                elif epoch < 10:
+                    train_disc = batch_idx % 3 == 0  # Balanced mid
+                else:
+                    train_disc = batch_idx % 5 == 0  # Less frequent late
+
             if train_disc:
                 # Step 1: Train Discriminator
                 self.model.set_training_mode("discriminator")
@@ -545,6 +557,7 @@ class Trainer:
                     "adversarial": AverageMeter(),
                     "disc_accuracy": AverageMeter(),
                     "fool_rate": AverageMeter(),
+                    "gradient_penalty": AverageMeter(),  # ADDED
                 }
             )
             # Add method-specific meters for adversarial methods
@@ -605,6 +618,12 @@ class Trainer:
             disc_result.get("discriminator_accuracy", 0), batch_size
         )
 
+        # ADDED: Gradient penalty tracking
+        if "gradient_penalty" in disc_result:
+            meters["gradient_penalty"].update(
+                disc_result.get("gradient_penalty", 0), batch_size
+            )
+
         # Student adversarial metrics
         meters["adversarial"].update(student_result.get("adversarial", 0), batch_size)
         meters["fool_rate"].update(student_result.get("fool_rate", 0), batch_size)
@@ -654,6 +673,10 @@ class Trainer:
             "disc_acc": f'{meters["disc_accuracy"].avg:.2%}',
             "fool": f'{meters["fool_rate"].avg:.2%}',
         }
+
+        # ADDED: Show GP if available
+        if "gradient_penalty" in meters and meters["gradient_penalty"].avg > 0:
+            postfix["gp"] = f'{meters["gradient_penalty"].avg:.3f}'
 
         # Add method-specific progress info
         if self.args.method == "DisDKD" and "dkd" in meters:
