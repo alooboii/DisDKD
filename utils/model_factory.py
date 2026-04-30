@@ -4,6 +4,9 @@ from distill.DisDKD import DisDKD
 from distill.fitnet import FitNet
 from distill.dkd import DKD
 from distill.logits_kd import LogitKD
+from distill.hard_ce import HardCE
+from distill.logit_mse import LogitMSE
+from distill.flow_kd import FlowKD
 from distill.crd import CRD
 from distill.ContraDKD import ContraDKD
 from utils.utils import count_params
@@ -29,7 +32,21 @@ def create_distillation_model(args, teacher, student, num_classes: int):
 
     models = {
         "Pretraining": lambda: Pretraining(teacher),
+        "HardCE": lambda: HardCE(teacher, student),
         "LogitKD": lambda: LogitKD(teacher, student),
+        "LogitMSE": lambda: LogitMSE(teacher, student),
+        "FlowKD": lambda: FlowKD(
+            teacher=teacher,
+            student=student,
+            student_layer=args.student_layer,
+            student_channels=student_channels,
+            num_classes=num_classes,
+            base_logits=args.base_logits,
+            flow_target=args.flow_target,
+            temperature=args.tau,
+            time_emb_dim=args.hidden_channels,
+            head_hidden_dim=max(128, args.hidden_channels),
+        ),
         "DKD": lambda: DKD(teacher, student, args.dkd_alpha, args.dkd_beta, args.tau),
         "DisDKD": lambda: DisDKD(
             teacher=teacher,
@@ -116,6 +133,9 @@ def print_model_parameters(model, method_name: str):
             ("student_regressor", "student_regressor", "module"),
             ("discriminator", "discriminator", "module"),
             ("l2c_proxies", "l2c_loss_mod.class_embeddings", "parameter"),
+        ],
+        "FlowKD": [
+            ("velocity_head", "velocity_head", "module"),
         ],
     }
 

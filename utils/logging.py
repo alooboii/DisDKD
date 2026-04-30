@@ -7,12 +7,26 @@ class LossTracker:
         self.log_path = Path(log_path)
         self.method = method
 
-        self.headers = ["epoch", "phase", "total", "ce", "kd", "accuracy"]
+        self.headers = [
+            "epoch",
+            "phase",
+            "total",
+            "ce",
+            "kd",
+            "accuracy",
+            "top1",
+            "nll",
+            "ece",
+            "kl_to_teacher",
+            "logit_mse",
+        ]
 
         method_headers = {
             "FitNet": ["hint"],
             "CRD": ["contrastive"],
             "DKD": ["tckd", "nckd"],
+            "LogitMSE": ["logit_mse_loss"],
+            "FlowKD": ["fm_loss"],
             "DisDKD": [
                 "dkd",
                 "discriminator",
@@ -62,12 +76,19 @@ class LossTracker:
             self._to_float(losses.get("ce", 0.0)),
             self._to_float(losses.get("kd", 0.0)),
             self._to_float(accuracy),
+            self._to_float(accuracy),
+            self._to_float(losses.get("nll", 0.0)),
+            self._to_float(losses.get("ece", 0.0)),
+            self._to_float(losses.get("kl_to_teacher", 0.0)),
+            self._to_float(losses.get("logit_mse", 0.0)),
         ]
 
         method_losses = {
             "FitNet": ["hint"],
             "CRD": ["contrastive"],
             "DKD": ["tckd", "nckd"],
+            "LogitMSE": ["logit_mse_loss"],
+            "FlowKD": ["fm_loss"],
             "DisDKD": [
                 "dkd",
                 "discriminator",

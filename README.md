@@ -1,90 +1,124 @@
-# WH-DisDKD
 # Knowledge Distillation Toolbox
 
-Compact, easy-to-follow training repo for experimenting with multiple knowledge-distillation (KD) methods — logit-based, feature-based, contrastive, and a discriminator-guided variant.
+Compact PyTorch training repo for experimenting with multiple KD methods, now including **FlowKD** (flow matching over teacher logits).
 
----
+## Methods (`--method`)
+- `Pretraining`: teacher pretraining (CE only).
+- `HardCE`: student CE baseline (hard labels only).
+- `LogitKD`: standard KD (CE + KL with temperature).
+- `LogitMSE`: CE + MSE between student and teacher logits.
+- `FlowKD`: CE + optional KL + flow-matching velocity loss over logits/probabilities.
+- Existing methods: `DKD`, `DisDKD`, `FitNet`, `CRD`, `ContraDKD`.
 
-## Supported methods
-The code exposes the `--method` flag. Available choices:
-- `Pretraining` — train student from data only (no KD).
-- `LogitKD` — vanilla logit distillation (Hinton et al.).  
-  https://arxiv.org/abs/1503.02531
-- `DKD` — Decoupled Knowledge Distillation (Zhao et al.).  
-  https://arxiv.org/abs/2203.08679
-- `DisDKD` — our Discriminator-guided feature alignment + DKD at logits (custom).
-- `FitNet` — FitNets feature distillation (Romero et al.).  
-  https://arxiv.org/abs/1412.6550
-- `CRD` — Contrastive Representation Distillation (Tian et al.).  
-  https://arxiv.org/abs/1910.10699
+## FlowKD Objective
+For input `x`:
+- `z_t = teacher(x).detach()`
+- `z_0 ~ base` where `base ∈ {zeros, gaussian}`
+- `tau ~ Uniform(0,1)`
+- `z_tau = (1 - tau) * z_0 + tau * z_t`
+- `v_star`:
+  - `logits`: `z_t - z_0`
+  - `probabilities`: `softmax(z_t/T) - softmax(z_0/T)`
+- `v_pred = v_phi(h_s(x), z_tau, tau_embed(tau))`
 
-> Note: the flag string must match exactly one of the choices above (see `config.py`).
+Loss:
+`L = alpha * CE + (beta * KL if use_kl else 0) + lambda_fm * MSE(v_pred, v_star)`
 
----
+## Key FlowKD Flags
+- `--base_logits zeros|gaussian`
+- `--lambda_fm <float>`
+- `--use_kl true|false`
+- `--flow_target logits|probabilities`
+- `--temperature <float>` (alias of `--tau`)
 
-## Quick start
-1. Running LogitKD method:
+## Metrics Reported
+Per epoch CSV now logs:
+- `accuracy` / `top1`
+- `nll`
+- `ece` (15-bin)
+- `kl_to_teacher`
+- `logit_mse`
+
+Checkpoints are saved to `--save_dir` using method/teacher/student/dataset naming.
+
+## Quick Start (CIFAR-10)
+### 1) Hard-label CE baseline
 ```bash
-python train.py \
+python main.py \
+  --method HardCE \
+  --teacher resnet18 \
+  --student resnet18 \
+  --dataset CIFAR10 \
+  --epochs 1 \
+  --batch_size 128 \
+  --save_dir ./checkpoints/hardce
+```
+
+### 2) Standard KD baseline
+```bash
+python main.py \
   --method LogitKD \
   --teacher resnet50 \
   --student resnet18 \
-  --dataset CIFAR100 \
-  --batch_size 128 \
-  --epochs 100 \
-  --lr 0.01 \
+  --dataset CIFAR10 \
+  --epochs 1 \
   --tau 4.0 \
-  --alpha 1.0 --beta 0.4 \
+  --alpha 1.0 \
+  --beta 0.4 \
   --save_dir ./checkpoints/logitkd
-  ```
-  2. Running DisDKD (our custom method)
-  ```bash
-  python train.py \
-  --method DisDKD \
+```
+
+### 3) Logit matching baseline
+```bash
+python main.py \
+  --method LogitMSE \
   --teacher resnet50 \
   --student resnet18 \
-  --dataset IMAGENETTE \
-  --epochs 60 \
-  --disdkd_adversarial_weight 0.01 \
-  --discriminator_lr 1e-4 \
-  --disc_lr_multiplier 1.0 \
-  --dkd_alpha 1.0 --dkd_beta 8.0 \
-  --save_dir ./checkpoints/disdkd
-  ```
-  3. Our script also supports OOD tests using domainbed. Simply specify the train domains (i.e., ones visible to the student during distillation) and the val-domains (these are only visible to the student during evaluation):
-  ```bash
-  python train.py \
-  --dataset PACS \
-  --method FitNet \
-  --train_domains art_photo \
-  --val_domains sketch \
-  --classic_split False
+  --dataset CIFAR10 \
+  --epochs 1 \
+  --alpha 1.0 \
+  --gamma 1.0 \
+  --save_dir ./checkpoints/logitmse
 ```
----
-## Important Flags
-* ```bash --teacher```, ```bash --student``` — model architectures (e.g., resnet50, resnet18).
 
-* ```bash --teacher_weights```, ```bash --student_weights``` — optional pretrained weights paths. This **must** be passed for the teacher for distillation.
+### 4) FlowKD
+```bash
+python main.py \
+  --method FlowKD \
+  --teacher resnet50 \
+  --student resnet18 \
+  --student_layer layer2 \
+  --dataset CIFAR10 \
+  --epochs 1 \
+  --alpha 1.0 \
+  --beta 0.4 \
+  --lambda_fm 1.0 \
+  --use_kl true \
+  --base_logits zeros \
+  --flow_target logits \
+  --temperature 4.0 \
+  --save_dir ./checkpoints/flowkd
+```
 
-* ```bash --pretrained``` — use ImageNet pretrained teacher weights. Only useful during pretraining. **Ignore this for now**__.
+## Ablation Examples
+### Base logits
+```bash
+python main.py --method FlowKD --dataset CIFAR10 --base_logits zeros --save_dir ./checkpoints/flowkd_zeros
+python main.py --method FlowKD --dataset CIFAR10 --base_logits gaussian --save_dir ./checkpoints/flowkd_gaussian
+```
 
-* ```bash --dataset```, ```bash --data_root```, ```bash --batch_size```, ```bash --num_workers```
+### KL on/off
+```bash
+python main.py --method FlowKD --dataset CIFAR10 --use_kl true --beta 0.4 --save_dir ./checkpoints/flowkd_kl
+python main.py --method FlowKD --dataset CIFAR10 --use_kl false --save_dir ./checkpoints/flowkd_nokl
+```
 
-* ```bash --method``` — KD method (see list above).
+### Target space
+```bash
+python main.py --method FlowKD --dataset CIFAR10 --flow_target logits --save_dir ./checkpoints/flowkd_logits
+python main.py --method FlowKD --dataset CIFAR10 --flow_target probabilities --temperature 4.0 --save_dir ./checkpoints/flowkd_probs
+```
 
-* Feature alignment: ```bash --teacher_layer```, ```bash --student_layer```, ```bash --adapter``` (who contains adapter i.e. teacher or student), ```bash --feat_dim```, ```bash--hidden_channels```.
-
-* DisDKD specifics: ```bash --disdkd_adversarial_weight```, ```bash --discriminator_lr```, ```bash --disc_lr_multiplier```.
-
-* DKD specifics: ```bash --dkd_alpha```, ```bash --dkd_beta```.
-
-* Loss weights & KD temp: ```bash --alpha``` (CE), ```bash --beta``` (KD), ```bash --gamma``` (method-specific), ```bash --tau``` (temperature).
-
-* Training: ```bash --epochs```, ```bash --lr```, ```bash --optimizer```, ```bash --momentum```, ```bash --weight_decay```, ```bash --step_size```, ```bash --lr_decay```.
-
-* Logging/output: ```bash --save_dir```, ```bash --log_file```, ```bash --print_freq```, ```bash --device```.
-
-Use python train.py --help (or the script entrypoint you have) for the full list generated from config.py.
-  
-
-
+## Notes
+- Use `python main.py --help` for full CLI options.
+- Existing OOD/domain-based dataset support remains unchanged.

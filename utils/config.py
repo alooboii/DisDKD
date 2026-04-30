@@ -2,6 +2,18 @@ import argparse
 from utils.data import get_available_domains, validate_domain_config, DOMAINBED_DATASETS
 
 
+def str2bool(v):
+    """Parse bool-like CLI values."""
+    if isinstance(v, bool):
+        return v
+    value = str(v).strip().lower()
+    if value in {"true", "1", "yes", "y", "on"}:
+        return True
+    if value in {"false", "0", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Expected a boolean value, got: {v}")
+
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Knowledge Distillation Training")
@@ -63,7 +75,18 @@ def parse_args():
         "--method",
         type=str,
         default="LogitKD",
-        choices=["Pretraining", "LogitKD", "DKD", "DisDKD", "FitNet", "CRD", "ContraDKD"],
+        choices=[
+            "Pretraining",
+            "HardCE",
+            "LogitKD",
+            "LogitMSE",
+            "FlowKD",
+            "DKD",
+            "DisDKD",
+            "FitNet",
+            "CRD",
+            "ContraDKD",
+        ],
     )
     parser.add_argument("--teacher_layer", type=str, default="layer3")
     parser.add_argument("--student_layer", type=str, default="layer2")
@@ -106,6 +129,32 @@ def parse_args():
         type=int,
         default=0,
         help="Number of epochs for FitNet Stage 1 (Hint only)",
+    )
+    parser.add_argument(
+        "--base_logits",
+        type=str,
+        default="zeros",
+        choices=["zeros", "gaussian"],
+        help="Base distribution for FlowKD interpolation",
+    )
+    parser.add_argument(
+        "--lambda_fm",
+        type=float,
+        default=1.0,
+        help="Weight for flow-matching loss in FlowKD",
+    )
+    parser.add_argument(
+        "--use_kl",
+        type=str2bool,
+        default=True,
+        help="Use KL distillation term for FlowKD",
+    )
+    parser.add_argument(
+        "--flow_target",
+        type=str,
+        default="logits",
+        choices=["logits", "probabilities"],
+        help="Target space for FlowKD velocity matching",
     )
 
     # ContraDKD-specific hyperparamters
@@ -161,6 +210,12 @@ def parse_args():
         "--gamma", type=float, default=1.0, help="Method-specific loss weight"
     )
     parser.add_argument("--tau", type=float, default=4.0, help="Temperature for KD")
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="Alias for --tau (for experiment compatibility)",
+    )
 
     # Logging and output
     parser.add_argument("--print_freq", type=int, default=100)
@@ -168,7 +223,12 @@ def parse_args():
     parser.add_argument("--save_dir", type=str, default="./checkpoints")
     parser.add_argument("--log_file", type=str, default="log.csv")
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.temperature is not None:
+        args.tau = args.temperature
+    else:
+        args.temperature = args.tau
+    return args
 
 
 def validate_and_setup_domains(args):
@@ -278,5 +338,13 @@ def print_training_config(args):
             print(
                 f"FitNet Stage 2 epochs (Task): {args.epochs - args.fitnet_stage1_epochs}"
             )
+    elif args.method == "LogitMSE":
+        print(f"LogitMSE weight (γ): {args.gamma}")
+    elif args.method == "FlowKD":
+        print(f"FlowKD base logits: {args.base_logits}")
+        print(f"FlowKD lambda_fm: {args.lambda_fm}")
+        print(f"FlowKD target space: {args.flow_target}")
+        print(f"FlowKD use KL: {args.use_kl}, KL weight (β): {args.beta}")
+        print(f"FlowKD temperature: {args.tau}")
 
     print("=" * 40)

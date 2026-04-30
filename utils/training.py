@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.optim.lr_scheduler import StepLR
 from tqdm import tqdm
@@ -176,8 +177,14 @@ class Trainer:
                     f"Time: {elapsed:.1f}s"
                 )
             else:
+                val_nll = val_losses.get("nll", 0.0)
+                val_ece = val_losses.get("ece", 0.0)
+                val_kl = val_losses.get("kl_to_teacher", 0.0)
+                val_mse = val_losses.get("logit_mse", 0.0)
                 print(
-                    f"Epoch {epoch} [{stage_name}]: Train {train_acc:.2f}%, Val {val_acc:.2f}%, Time {elapsed:.1f}s"
+                    f"Epoch {epoch} [{stage_name}]: Train {train_acc:.2f}%, Val {val_acc:.2f}% | "
+                    f"NLL: {val_nll:.4f}, ECE: {val_ece:.4f}, KL(T): {val_kl:.4f}, LogitMSE: {val_mse:.4f} | "
+                    f"Time {elapsed:.1f}s"
                 )
 
             # Save best model
@@ -339,6 +346,10 @@ class Trainer:
             total_loss.backward()
             self.student_optimizer.step()
 
+            aux_metrics = self._compute_aux_metrics(
+                teacher_logits, student_logits, targets
+            )
+
             # Update meters - combine metrics from both phases
             self._update_adversarial_meters(
                 meters,
@@ -350,6 +361,7 @@ class Trainer:
                 student_logits,
                 targets,
                 inputs.size(0),
+                aux_metrics,
             )
 
             # Update progress bar
@@ -401,29 +413,29 @@ class Trainer:
                         inputs
                     )
 
-                # Compute loss components
-                ce_loss = self.criterion(student_logits, targets)
-                kd_loss = self._compute_kd_loss(teacher_logits, student_logits)
+                if teacher_logits is None and hasattr(self.model, "teacher"):
+                    teacher_logits = self.model.teacher(inputs)
 
-                total = self.args.alpha * ce_loss + self.args.beta * kd_loss
-
-                losses_dict = {
-                    "ce": ce_loss.item(),
-                    "kd": kd_loss.item(),
-                }
-
-                # Method-specific
-                if method_specific_loss is not None and self.args.method in [
-                    "CRD",
-                    "FitNet",
-                ]:
-                    total = total + self.args.gamma * method_specific_loss
-                    if self.args.method == "CRD":
-                        losses_dict["contrastive"] = method_specific_loss.item()
-                    elif self.args.method == "FitNet":
-                        losses_dict["hint"] = method_specific_loss.item()
-
-                losses_dict["total"] = total.item()
+                if self.args.method in ["DisDKD", "ContraDKD"]:
+                    ce_loss = self.criterion(student_logits, targets)
+                    kd_loss = self._compute_kd_loss(teacher_logits, student_logits)
+                    total = self.args.alpha * ce_loss + self.args.beta * kd_loss
+                    losses_dict = {
+                        "ce": ce_loss.item(),
+                        "kd": kd_loss.item(),
+                        "total": total.item(),
+                    }
+                    losses_dict.update(
+                        self._compute_aux_metrics(teacher_logits, student_logits, targets)
+                    )
+                else:
+                    total, losses_dict = self._compute_losses(
+                        teacher_logits,
+                        student_logits,
+                        targets,
+                        method_specific_loss,
+                        inputs,
+                    )
 
                 # Update meters
                 self._update_meters(
@@ -451,20 +463,89 @@ class Trainer:
             nn.functional.softmax(teacher_logits / T, dim=1),
         ) * (T * T)
 
+    def _compute_ece(self, logits, targets, n_bins=15):
+        """Compute Expected Calibration Error (ECE)."""
+        probs = F.softmax(logits, dim=1)
+        confidences, predictions = probs.max(dim=1)
+        accuracies = predictions.eq(targets)
+
+        bin_boundaries = torch.linspace(0, 1, n_bins + 1, device=logits.device)
+        ece = torch.zeros([], device=logits.device)
+
+        for i in range(n_bins):
+            lower = bin_boundaries[i]
+            upper = bin_boundaries[i + 1]
+            if i == n_bins - 1:
+                mask = (confidences >= lower) & (confidences <= upper)
+            else:
+                mask = (confidences >= lower) & (confidences < upper)
+
+            if mask.any():
+                bin_acc = accuracies[mask].float().mean()
+                bin_conf = confidences[mask].mean()
+                ece = ece + mask.float().mean() * torch.abs(bin_conf - bin_acc)
+
+        return ece
+
+    def _compute_aux_metrics(self, teacher_logits, student_logits, targets):
+        """Compute common reporting metrics."""
+        nll = F.nll_loss(F.log_softmax(student_logits, dim=1), targets)
+        ece = self._compute_ece(student_logits, targets, n_bins=15)
+
+        if teacher_logits is None:
+            kl_to_teacher = torch.tensor(0.0, device=student_logits.device)
+            logit_mse = torch.tensor(0.0, device=student_logits.device)
+        else:
+            kl_to_teacher = self._compute_kd_loss(teacher_logits, student_logits)
+            logit_mse = F.mse_loss(student_logits, teacher_logits)
+
+        return {
+            "nll": nll.item(),
+            "ece": ece.item(),
+            "kl_to_teacher": kl_to_teacher.item(),
+            "logit_mse": logit_mse.item(),
+        }
+
     def _compute_losses(
         self, teacher_logits, student_logits, targets, method_specific_loss, inputs=None
     ):
         """Compute all losses for standard training."""
         ce_loss = self.criterion(student_logits, targets)
+        method = self.args.method
 
-        if self.args.method in ["DKD"]:
+        if method == "DKD":
             kd_loss = torch.tensor(0.0, device=student_logits.device)
+            total_loss = self.args.alpha * ce_loss
+            if method_specific_loss is not None:
+                total_loss = total_loss + method_specific_loss
+
+        elif method == "HardCE":
+            kd_loss = torch.tensor(0.0, device=student_logits.device)
+            total_loss = self.args.alpha * ce_loss
+
+        elif method == "LogitMSE":
+            kd_loss = torch.tensor(0.0, device=student_logits.device)
+            total_loss = self.args.alpha * ce_loss
+            if method_specific_loss is not None:
+                total_loss = total_loss + self.args.gamma * method_specific_loss
+
+        elif method == "FlowKD":
+            if self.args.use_kl:
+                kd_loss = self._compute_kd_loss(teacher_logits, student_logits)
+                kl_term = self.args.beta * kd_loss
+            else:
+                kd_loss = torch.tensor(0.0, device=student_logits.device)
+                kl_term = torch.tensor(0.0, device=student_logits.device)
+
+            total_loss = self.args.alpha * ce_loss + kl_term
+            if method_specific_loss is not None:
+                total_loss = total_loss + self.args.lambda_fm * method_specific_loss
+
         else:
             kd_loss = self._compute_kd_loss(teacher_logits, student_logits)
-
-        weighted_ce = self.args.alpha * ce_loss
-        weighted_kd = self.args.beta * kd_loss
-        total_loss = weighted_ce + weighted_kd
+            total_loss = self.args.alpha * ce_loss + self.args.beta * kd_loss
+            if method_specific_loss is not None:
+                total_loss = total_loss + self.args.gamma * method_specific_loss
 
         losses_dict = {
             "total": total_loss.item(),
@@ -472,30 +553,27 @@ class Trainer:
             "kd": kd_loss.item(),
         }
 
-        # Handle method-specific losses
         if method_specific_loss is not None:
-            if self.args.method in ["DKD"]:
-                total_loss += method_specific_loss
-
-                if self.args.method == "DKD":
-                    tckd, nckd = self._compute_dkd_components(
-                        student_logits, teacher_logits, targets
-                    )
-                    losses_dict["tckd"] = tckd
-                    losses_dict["nckd"] = nckd
-
+            if method == "DKD":
+                tckd, nckd = self._compute_dkd_components(
+                    student_logits, teacher_logits, targets
+                )
+                losses_dict["tckd"] = tckd
+                losses_dict["nckd"] = nckd
+            elif method == "FitNet":
+                losses_dict["hint"] = method_specific_loss.item()
+            elif method == "CRD":
+                losses_dict["contrastive"] = method_specific_loss.item()
+            elif method == "LogitMSE":
+                losses_dict["logit_mse_loss"] = method_specific_loss.item()
+            elif method == "FlowKD":
+                losses_dict["fm_loss"] = method_specific_loss.item()
             else:
-                method_loss_value = method_specific_loss.item()
-                weighted_method = self.args.gamma * method_specific_loss
-                total_loss += weighted_method
+                losses_dict["method_specific"] = method_specific_loss.item()
 
-                loss_key_map = {
-                    "FitNet": "hint",
-                    "CRD": "contrastive",
-                }
-                loss_key = loss_key_map.get(self.args.method, "method_specific")
-                losses_dict[loss_key] = method_loss_value
-
+        losses_dict.update(
+            self._compute_aux_metrics(teacher_logits, student_logits, targets)
+        )
         losses_dict["total"] = total_loss.item()
         return total_loss, losses_dict
 
@@ -548,6 +626,10 @@ class Trainer:
             "ce": AverageMeter(),
             "kd": AverageMeter(),
             "accuracy": AverageMeter(),
+            "nll": AverageMeter(),
+            "ece": AverageMeter(),
+            "kl_to_teacher": AverageMeter(),
+            "logit_mse": AverageMeter(),
         }
 
         if adversarial:
@@ -572,6 +654,8 @@ class Trainer:
                 "FitNet": ["hint"],
                 "CRD": ["contrastive"],
                 "DKD": ["tckd", "nckd"],
+                "LogitMSE": ["logit_mse_loss"],
+                "FlowKD": ["fm_loss"],
             }
 
             if self.args.method in method_meters:
@@ -601,6 +685,7 @@ class Trainer:
         student_logits,
         targets,
         batch_size,
+        aux_metrics,
     ):
         """Update meters for adversarial training."""
         acc1 = accuracy(student_logits, targets, topk=(1,))[0]
@@ -609,6 +694,9 @@ class Trainer:
         meters["ce"].update(ce_loss.item(), batch_size)
         meters["kd"].update(kd_loss.item(), batch_size)
         meters["accuracy"].update(acc1.item(), batch_size)
+        for key, value in aux_metrics.items():
+            if key in meters:
+                meters[key].update(value, batch_size)
 
         # Discriminator metrics
         meters["discriminator"].update(
@@ -654,11 +742,16 @@ class Trainer:
             "ce": f'{meters["ce"].avg:.4f}',
             "kd": f'{meters["kd"].avg:.4f}',
             "acc": f'{meters["accuracy"].avg:.2f}%',
+            "ece": f'{meters["ece"].avg:.3f}',
         }
 
         if self.args.method == "DKD" and "tckd" in meters:
             postfix["tckd"] = f'{meters["tckd"].avg:.4f}'
             postfix["nckd"] = f'{meters["nckd"].avg:.4f}'
+        elif self.args.method == "FlowKD" and "fm_loss" in meters:
+            postfix["fm"] = f'{meters["fm_loss"].avg:.4f}'
+        elif self.args.method == "LogitMSE" and "logit_mse_loss" in meters:
+            postfix["lmse"] = f'{meters["logit_mse_loss"].avg:.4f}'
 
         progress_bar.set_postfix(postfix)
 
@@ -670,6 +763,7 @@ class Trainer:
             "disc": f'{meters["discriminator"].avg:.4f}',
             "adv": f'{meters["adversarial"].avg:.4f}',
             "acc": f'{meters["accuracy"].avg:.2f}%',
+            "ece": f'{meters["ece"].avg:.3f}',
             "disc_acc": f'{meters["disc_accuracy"].avg:.2%}',
             "fool": f'{meters["fool_rate"].avg:.2%}',
         }
