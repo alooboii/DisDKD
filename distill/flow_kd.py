@@ -96,6 +96,7 @@ class FlowKD(nn.Module):
         temperature=4.0,
         time_emb_dim=32,
         head_hidden_dim=256,
+        debug=False,
     ):
         super(FlowKD, self).__init__()
         self.teacher = teacher
@@ -105,10 +106,18 @@ class FlowKD(nn.Module):
         self.base_logits = base_logits
         self.flow_target = flow_target
         self.temperature = temperature
+        self.debug = debug
+        self._debug_printed = False
 
         if student_channels is None:
             raise ValueError(
                 f"FlowKD requires known channel count for layer '{student_layer}'."
+            )
+
+        if self.debug:
+            print(
+                f"[FlowKD INIT] flow_target={self.flow_target} "
+                f"base_logits={self.base_logits} temperature={self.temperature}"
             )
 
         for param in self.teacher.parameters():
@@ -183,6 +192,36 @@ class FlowKD(nn.Module):
             )
 
         fm_loss = F.mse_loss(v_pred, v_star)
+
+        if self.debug and not self._debug_printed:
+            with torch.no_grad():
+                teacher_row_sum = z_t[:5].sum(dim=1)
+                teacher_softmax_row_sum = F.softmax(z_t, dim=1)[:5].sum(dim=1)
+
+                print(f"[FlowKD DEBUG] flow_target: {self.flow_target}")
+                print(f"[FlowKD DEBUG] base_logits: {self.base_logits}")
+                print(
+                    "[FlowKD DEBUG] z_t min/max/mean/std:",
+                    z_t.min().item(),
+                    z_t.max().item(),
+                    z_t.mean().item(),
+                    z_t.std().item(),
+                )
+                print("[FlowKD DEBUG] teacher row sum first 5:", teacher_row_sum)
+                print(
+                    "[FlowKD DEBUG] teacher softmax row sum first 5:",
+                    teacher_softmax_row_sum,
+                )
+                print("[FlowKD DEBUG] z_0 std:", z_0.std().item())
+                print("[FlowKD DEBUG] state_tau mean/std:", state_tau.mean().item(), state_tau.std().item())
+                print("[FlowKD DEBUG] v_star mean abs:", v_star.abs().mean().item())
+                print("[FlowKD DEBUG] v_star std:", v_star.std().item())
+                print("[FlowKD DEBUG] v_star mse from zero:", (v_star ** 2).mean().item())
+                print("[FlowKD DEBUG] v_pred mean/std:", v_pred.mean().item(), v_pred.std().item())
+                print("[FlowKD DEBUG] fm_loss:", fm_loss.item())
+                # Logit-flow FM usually has larger scale than probability-flow FM.
+                # If fm_loss is unexpectedly tiny in logit mode, inspect z_t/v_star stats.
+            self._debug_printed = True
 
         self.student_hooks.clear()
         return z_t, student_logits, fm_loss

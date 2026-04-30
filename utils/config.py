@@ -156,6 +156,12 @@ def parse_args():
         choices=["logits", "probabilities"],
         help="Target space for FlowKD velocity matching",
     )
+    parser.add_argument(
+        "--debug_flowkd",
+        type=str2bool,
+        default=False,
+        help="Print one-time FlowKD diagnostics on first batch",
+    )
 
     # ContraDKD-specific hyperparamters
     parser.add_argument(
@@ -346,5 +352,6 @@ def print_training_config(args):
         print(f"FlowKD target space: {args.flow_target}")
         print(f"FlowKD use KL: {args.use_kl}, KL weight (β): {args.beta}")
         print(f"FlowKD temperature: {args.tau}")
+        print(f"FlowKD debug diagnostics: {args.debug_flowkd}")
 
     print("=" * 40)

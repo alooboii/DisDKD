@@ -25,6 +25,7 @@ class Trainer:
         self.loss_tracker = loss_tracker
         self.device = device
         self.args = args
+        self._flowkd_debug_printed = False
 
         # Create distillation model
         self.model = create_distillation_model(args, teacher, student, num_classes).to(
@@ -542,6 +543,18 @@ class Trainer:
             total_loss = self.args.alpha * ce_loss + kl_term
             if method_specific_loss is not None:
                 total_loss = total_loss + self.args.lambda_fm * method_specific_loss
+                if (
+                    getattr(self.args, "debug_flowkd", False)
+                    and not self._flowkd_debug_printed
+                ):
+                    fm_value = method_specific_loss.item()
+                    print("[Trainer DEBUG] method_specific_loss:", fm_value)
+                    print("[Trainer DEBUG] lambda_fm:", self.args.lambda_fm)
+                    print(
+                        "[Trainer DEBUG] weighted_fm:",
+                        self.args.lambda_fm * fm_value,
+                    )
+                    self._flowkd_debug_printed = True
 
         else:
             kd_loss = self._compute_kd_loss(teacher_logits, student_logits)

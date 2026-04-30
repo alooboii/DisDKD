@@ -46,6 +46,7 @@ def create_distillation_model(args, teacher, student, num_classes: int):
             temperature=args.tau,
             time_emb_dim=args.hidden_channels,
             head_hidden_dim=max(128, args.hidden_channels),
+            debug=getattr(args, "debug_flowkd", False),
         ),
         "DKD": lambda: DKD(teacher, student, args.dkd_alpha, args.dkd_beta, args.tau),
         "DisDKD": lambda: DisDKD(
