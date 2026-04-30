@@ -37,7 +37,7 @@ class VelocityHead(nn.Module):
 
     Inputs:
       - pooled student feature h_s(x)
-      - interpolated logits z_tau
+      - interpolated state state_tau (logits or probabilities)
       - tau embedding
     """
 
@@ -61,7 +61,7 @@ class VelocityHead(nn.Module):
             nn.Linear(hidden_dim, num_classes),
         )
 
-    def forward(self, student_feat, z_tau, tau):
+    def forward(self, student_feat, state_tau, tau):
         if student_feat.dim() == 4:
             h = F.adaptive_avg_pool2d(student_feat, 1).flatten(1)
         else:
@@ -69,13 +69,19 @@ class VelocityHead(nn.Module):
 
         tau = tau.view(-1, 1)
         tau_emb = self.tau_embed(tau)
-        combined = torch.cat([h, z_tau, tau_emb], dim=1)
+        combined = torch.cat([h, state_tau, tau_emb], dim=1)
         return self.predictor(combined)
 
 
 class FlowKD(nn.Module):
     """
     Flow-Matching KD over teacher logits.
+
+    Notes:
+      - Logit flow is the default and usually the most stable branch.
+      - Probability flow must interpolate probabilities (not logits).
+      - Velocity head is a training-only auxiliary module and is not used for
+        inference-time predictions.
     """
 
     def __init__(
@@ -107,6 +113,7 @@ class FlowKD(nn.Module):
 
         for param in self.teacher.parameters():
             param.requires_grad = False
+        self.teacher.eval()
 
         self.student_hooks = FeatureHooks(
             [(student_layer, get_module(self.student.model, student_layer))]
@@ -118,6 +125,12 @@ class FlowKD(nn.Module):
             hidden_dim=head_hidden_dim,
         )
 
+    def train(self, mode=True):
+        """Keep teacher in eval mode even when student/head are in train mode."""
+        super().train(mode)
+        self.teacher.eval()
+        return self
+
     def _build_base_logits(self, z_t):
         if self.base_logits == "zeros":
             return torch.zeros_like(z_t)
@@ -127,14 +140,22 @@ class FlowKD(nn.Module):
             f"Unknown base_logits mode: {self.base_logits}. Use zeros|gaussian."
         )
 
-    def _build_velocity_target(self, z_t, z_0):
+    def _build_state_and_velocity_target(self, z_t, z_0, tau):
+        # Default stable branch: interpolate and match velocity in logit space.
         if self.flow_target == "logits":
-            return z_t - z_0
+            state_tau = (1.0 - tau) * z_0 + tau * z_t
+            v_star = z_t - z_0
+            return state_tau, v_star
 
+        # Probability-flow branch: interpolate probabilities, then match
+        # probability-space velocity. Do not mix logit-space state with
+        # probability-space target.
         if self.flow_target == "probabilities":
             p_t = F.softmax(z_t / self.temperature, dim=1)
             p_0 = F.softmax(z_0 / self.temperature, dim=1)
-            return p_t - p_0
+            state_tau = (1.0 - tau) * p_0 + tau * p_t
+            v_star = p_t - p_0
+            return state_tau, v_star
 
         raise ValueError(
             f"Unknown flow_target mode: {self.flow_target}. Use logits|probabilities."
@@ -142,8 +163,10 @@ class FlowKD(nn.Module):
 
     def forward(self, x):
         with torch.no_grad():
-            z_t = self.teacher(x)
+            z_t = self.teacher(x).detach()
 
+        # Clear stale features from previous batch before student forward.
+        self.student_hooks.clear()
         student_logits = self.student(x)
         student_feat = self.student_hooks.features.get(self.student_layer)
         if student_feat is None:
@@ -151,9 +174,8 @@ class FlowKD(nn.Module):
 
         z_0 = self._build_base_logits(z_t)
         tau = torch.rand(z_t.size(0), 1, device=z_t.device)
-        z_tau = (1.0 - tau) * z_0 + tau * z_t
-        v_star = self._build_velocity_target(z_t, z_0)
-        v_pred = self.velocity_head(student_feat, z_tau, tau)
+        state_tau, v_star = self._build_state_and_velocity_target(z_t, z_0, tau)
+        v_pred = self.velocity_head(student_feat, state_tau, tau)
 
         if v_pred.shape != v_star.shape:
             raise RuntimeError(

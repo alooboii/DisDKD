@@ -436,6 +436,8 @@ class Trainer:
                         method_specific_loss,
                         inputs,
                     )
+                    # For FlowKD, fm_loss in validation uses random tau and is
+                    # logged as a diagnostic only; accuracy comes from logits.
 
                 # Update meters
                 self._update_meters(
