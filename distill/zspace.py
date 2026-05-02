@@ -163,11 +163,12 @@ class LayerConditionedZSpace(nn.Module):
     def _ensure_layer_adapters(self, layer_name: str, hidden: torch.Tensor):
         key = self._layer_key(layer_name)
         ch = self._channel_dim(hidden)
+        dev = hidden.device
 
         if key not in self.encoder_mlps:
-            self.encoder_mlps[key] = self._build_encoder_mlp(ch)
+            self.encoder_mlps[key] = self._build_encoder_mlp(ch).to(dev)
         if key not in self.decoder_mlps:
-            self.decoder_mlps[key] = self._build_decoder_mlp(ch)
+            self.decoder_mlps[key] = self._build_decoder_mlp(ch).to(dev)
 
         self.layer_input_channels[key] = ch
         self.layer_shape_templates[key] = self._hidden_shape_wo_batch(hidden)
@@ -175,39 +176,43 @@ class LayerConditionedZSpace(nn.Module):
     def _align_key(self, src_layer: str, tgt_layer: str) -> str:
         return f"{src_layer}__to__{tgt_layer}"
 
-    def _ensure_transition_alignment(self, src_layer: str, tgt_layer: str):
+    def _ensure_transition_alignment(self, src_layer: str, tgt_layer: str, device=None):
         src_shape = self.layer_shape_templates[src_layer]
         tgt_shape = self.layer_shape_templates[tgt_layer]
         key = self._align_key(src_layer, tgt_layer)
+        dev = device
 
         if len(src_shape) == 3 and len(tgt_shape) == 3:
             src_c = src_shape[0]
             tgt_c = tgt_shape[0]
             if src_c != tgt_c and key not in self.align_conv:
-                self.align_conv[key] = nn.Conv2d(src_c, tgt_c, kernel_size=1, bias=False)
+                self.align_conv[key] = nn.Conv2d(src_c, tgt_c, kernel_size=1, bias=False).to(dev)
             return
 
         if len(src_shape) == 2 and len(tgt_shape) == 2:
             src_c = src_shape[1]
             tgt_c = tgt_shape[1]
             if src_c != tgt_c and key not in self.align_linear:
-                self.align_linear[key] = nn.Linear(src_c, tgt_c, bias=False)
+                self.align_linear[key] = nn.Linear(src_c, tgt_c, bias=False).to(dev)
             return
 
         # Cross-modality or mixed channel format fallback.
         src_c = src_shape[0] if len(src_shape) == 3 else src_shape[1]
         tgt_c = tgt_shape[0] if len(tgt_shape) == 3 else tgt_shape[1]
         if src_c != tgt_c and key not in self.align_linear:
-            self.align_linear[key] = nn.Linear(src_c, tgt_c, bias=False)
+            self.align_linear[key] = nn.Linear(src_c, tgt_c, bias=False).to(dev)
 
     def ensure_from_features(self, features: Dict[str, torch.Tensor]):
+        feature_dev = None
         for layer in self.layer_names:
             if layer not in features:
                 raise KeyError(f"Layer '{layer}' missing in features: {list(features.keys())}")
             self._ensure_layer_adapters(layer, features[layer])
+            if feature_dev is None:
+                feature_dev = features[layer].device
 
         for src, tgt in zip(self.layer_names[:-1], self.layer_names[1:]):
-            self._ensure_transition_alignment(src, tgt)
+            self._ensure_transition_alignment(src, tgt, device=feature_dev)
 
     def encode(self, hidden: torch.Tensor, layer_name: str) -> torch.Tensor:
         key = self._layer_key(layer_name)
@@ -232,7 +237,7 @@ class LayerConditionedZSpace(nn.Module):
 
         if key not in self.decoder_mlps or self.layer_input_channels.get(key, None) != out_c:
             # Keep decoder keyed per layer but rebuild if channel schema changed.
-            self.decoder_mlps[key] = self._build_decoder_mlp(out_c)
+            self.decoder_mlps[key] = self._build_decoder_mlp(out_c).to(z.device)
             self.layer_input_channels[key] = out_c
 
         layer_bias = self.layer_embed.weight[self.layer_to_idx[key]].view(1, 1, -1)
@@ -270,7 +275,7 @@ class LayerConditionedZSpace(nn.Module):
         tgt_shape = self._hidden_shape_wo_batch(h_tgt)
         self.layer_shape_templates[src_layer] = src_shape
         self.layer_shape_templates[tgt_layer] = tgt_shape
-        self._ensure_transition_alignment(src_layer, tgt_layer)
+        self._ensure_transition_alignment(src_layer, tgt_layer, device=h_src.device)
         key = self._align_key(src_layer, tgt_layer)
 
         if h_src.dim() == 4 and h_tgt.dim() == 4:
