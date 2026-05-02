@@ -8,6 +8,7 @@ Compact PyTorch training repo for experimenting with multiple KD methods, now in
 - `LogitKD`: standard KD (CE + KL with temperature).
 - `LogitMSE`: CE + MSE between student and teacher logits.
 - `FlowKD`: CE + optional KL + flow-matching velocity loss over logits/probabilities.
+- `ZFlow`: teacher-only 3-stage pipeline (Z-space learning, flow learning, zero-shot block replacement eval).
 - Existing methods: `DKD`, `DisDKD`, `FitNet`, `CRD`, `ContraDKD`.
 
 ## FlowKD Objective
@@ -122,3 +123,41 @@ python main.py --method FlowKD --dataset CIFAR10 --flow_target probabilities --t
 ## Notes
 - Use `python main.py --help` for full CLI options.
 - Existing OOD/domain-based dataset support remains unchanged.
+
+## ZFlow (Teacher-Only Stages)
+Run with `--method ZFlow` and pick a stage:
+- `--zflow_stage zspace`: learn layer-conditioned encoder/decoder in common Z-space.
+- `--zflow_stage flow`: learn pair-conditioned velocity field in Z-space.
+- `--zflow_stage eval`: evaluate zero-shot block replacement baselines.
+- `--zflow_stage all`: run all three stages sequentially.
+
+Example:
+```bash
+python main.py \
+  --method ZFlow \
+  --zflow_stage all \
+  --teacher resnet50 \
+  --dataset CIFAR10 \
+  --z_layers layer1 layer2 layer3 layer4 \
+  --z_dim 128 \
+  --z_tokens_mode spatial \
+  --z_tokens 4 \
+  --lambda_rec 1.0 \
+  --lambda_dist 1.0 \
+  --lambda_angle 1.0 \
+  --lambda_trans_dist 1.0 \
+  --lambda_trans_angle 1.0 \
+  --lambda_fm 1.0 \
+  --lambda_path 1.0 \
+  --lambda_end 1.0 \
+  --zflow_pair_mode mixed \
+  --zflow_num_pairs 4 \
+  --zflow_steps 8 \
+  --zflow_eval_steps 1 2 4 8 \
+  --save_dir ./checkpoints/zflow_run
+```
+
+Artifacts:
+- `.../zflow/zspace_best.pth`, `zspace_last.pth`
+- `.../zflow/flow_best.pth`, `flow_last.pth`
+- `.../zflow/zspace_log.csv`, `flow_log.csv`, `eval_metrics.csv`

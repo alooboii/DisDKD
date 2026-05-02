@@ -9,6 +9,7 @@ from utils.utils import set_seed
 from utils.config import parse_args, validate_and_setup_domains, print_training_config
 from utils.training import Trainer
 from utils.logging import LossTracker
+from utils.zflow_training import ZFlowRunner
 
 
 def main():
@@ -53,9 +54,24 @@ def main():
         teacher = TeacherModel(args.teacher, num_classes, args.teacher_weights, 
                               pretrained=args.pretrained).to(device)
         student = None
+    elif args.method == 'ZFlow':
+        teacher = TeacherModel(args.teacher, num_classes, args.teacher_weights).to(device)
+        student = None
     else:
         teacher = TeacherModel(args.teacher, num_classes, args.teacher_weights).to(device)
         student = StudentModel(args.student, num_classes, args.student_weights).to(device)
+
+    if args.method == "ZFlow":
+        runner = ZFlowRunner(
+            args=args,
+            teacher=teacher,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            device=device,
+        )
+        runner.run()
+        print("\nZFlow run completed.")
+        return
     
     # Initialize trainer
     criterion = nn.CrossEntropyLoss()

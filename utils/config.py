@@ -81,6 +81,7 @@ def parse_args():
             "LogitKD",
             "LogitMSE",
             "FlowKD",
+            "ZFlow",
             "DKD",
             "DisDKD",
             "FitNet",
@@ -161,6 +162,148 @@ def parse_args():
         type=str2bool,
         default=False,
         help="Print one-time FlowKD diagnostics on first batch",
+    )
+    parser.add_argument(
+        "--zflow_stage",
+        type=str,
+        default="zspace",
+        choices=["zspace", "flow", "eval", "all"],
+        help="ZFlow stage to run",
+    )
+    parser.add_argument(
+        "--z_layers",
+        nargs="+",
+        default=["layer1", "layer2", "layer3", "layer4"],
+        help="Teacher layers used by ZFlow",
+    )
+    parser.add_argument(
+        "--z_dim",
+        type=int,
+        default=128,
+        help="Common latent channel dimension for ZFlow",
+    )
+    parser.add_argument(
+        "--z_tokens",
+        type=int,
+        default=4,
+        help="Number of latent tokens for ZFlow adapters",
+    )
+    parser.add_argument(
+        "--z_tokens_mode",
+        type=str,
+        default="spatial",
+        choices=["global", "spatial"],
+        help="CNN tokenization mode for ZFlow encoder",
+    )
+    parser.add_argument(
+        "--z_use_norm",
+        type=str2bool,
+        default=True,
+        help="Apply token normalization inside ZFlow adapters",
+    )
+    parser.add_argument(
+        "--z_mlp_expansion",
+        type=float,
+        default=1.0,
+        help="MLP expansion ratio for ZFlow encoder/decoder adapters",
+    )
+    parser.add_argument(
+        "--lambda_rec",
+        type=float,
+        default=1.0,
+        help="Stage-1 reconstruction loss weight",
+    )
+    parser.add_argument(
+        "--lambda_dist",
+        type=float,
+        default=1.0,
+        help="Stage-1 RKD distance loss weight",
+    )
+    parser.add_argument(
+        "--lambda_angle",
+        type=float,
+        default=1.0,
+        help="Stage-1 RKD angle loss weight",
+    )
+    parser.add_argument(
+        "--lambda_trans_dist",
+        type=float,
+        default=1.0,
+        help="Stage-1 transition RKD distance loss weight",
+    )
+    parser.add_argument(
+        "--lambda_trans_angle",
+        type=float,
+        default=1.0,
+        help="Stage-1 transition RKD angle loss weight",
+    )
+    parser.add_argument(
+        "--lambda_path",
+        type=float,
+        default=1.0,
+        help="Stage-2 path-consistency loss weight",
+    )
+    parser.add_argument(
+        "--lambda_end",
+        type=float,
+        default=1.0,
+        help="Stage-2 endpoint rollout loss weight",
+    )
+    parser.add_argument(
+        "--zflow_pair_mode",
+        type=str,
+        default="mixed",
+        choices=["adjacent", "long", "mixed"],
+        help="Layer pair sampling mode for flow learning/eval",
+    )
+    parser.add_argument(
+        "--zflow_num_pairs",
+        type=int,
+        default=4,
+        help="Number of layer pairs sampled per batch in stage-2",
+    )
+    parser.add_argument(
+        "--zflow_steps",
+        type=int,
+        default=8,
+        help="Number of Euler steps used for stage-2 rollout/path losses",
+    )
+    parser.add_argument(
+        "--zflow_eval_steps",
+        nargs="+",
+        type=int,
+        default=[1, 2, 4, 8],
+        help="Euler step counts used for stage-3 flow replacement evaluation",
+    )
+    parser.add_argument(
+        "--zflow_hidden_dim",
+        type=int,
+        default=256,
+        help="Hidden dimension of ZFlow velocity network",
+    )
+    parser.add_argument(
+        "--zflow_num_blocks",
+        type=int,
+        default=2,
+        help="Number of residual blocks in ZFlow velocity network",
+    )
+    parser.add_argument(
+        "--zflow_diagnostic",
+        type=str2bool,
+        default=True,
+        help="Enable oracle diagnostic baselines/metrics in stage-3",
+    )
+    parser.add_argument(
+        "--zspace_ckpt",
+        type=str,
+        default="",
+        help="Path to Stage-1 Z-space checkpoint",
+    )
+    parser.add_argument(
+        "--flow_ckpt",
+        type=str,
+        default="",
+        help="Path to Stage-2 flow checkpoint",
     )
 
     # ContraDKD-specific hyperparamters
@@ -353,5 +496,28 @@ def print_training_config(args):
         print(f"FlowKD use KL: {args.use_kl}, KL weight (β): {args.beta}")
         print(f"FlowKD temperature: {args.tau}")
         print(f"FlowKD debug diagnostics: {args.debug_flowkd}")
+    elif args.method == "ZFlow":
+        print(f"ZFlow stage: {args.zflow_stage}")
+        print(f"ZFlow layers: {args.z_layers}")
+        print(
+            f"ZFlow latent config: z_dim={args.z_dim}, z_tokens={args.z_tokens}, "
+            f"z_tokens_mode={args.z_tokens_mode}, use_norm={args.z_use_norm}"
+        )
+        print(
+            f"ZFlow Stage-1 lambdas: rec={args.lambda_rec}, dist={args.lambda_dist}, "
+            f"angle={args.lambda_angle}, trans_dist={args.lambda_trans_dist}, "
+            f"trans_angle={args.lambda_trans_angle}"
+        )
+        print(
+            f"ZFlow Stage-2: lambda_fm={args.lambda_fm}, lambda_path={args.lambda_path}, "
+            f"lambda_end={args.lambda_end}, pair_mode={args.zflow_pair_mode}, "
+            f"num_pairs={args.zflow_num_pairs}, steps={args.zflow_steps}"
+        )
+        print(f"ZFlow Eval steps: {args.zflow_eval_steps}")
+        print(f"ZFlow diagnostics enabled: {args.zflow_diagnostic}")
+        if args.zspace_ckpt:
+            print(f"ZFlow zspace_ckpt: {args.zspace_ckpt}")
+        if args.flow_ckpt:
+            print(f"ZFlow flow_ckpt: {args.flow_ckpt}")
 
     print("=" * 40)

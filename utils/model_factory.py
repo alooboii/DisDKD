@@ -27,6 +27,12 @@ def get_layer_channels(model_name: str, layer_name: str) -> int:
 
 def create_distillation_model(args, teacher, student, num_classes: int):
     """Create the appropriate distillation model."""
+    if args.method == "ZFlow":
+        raise ValueError(
+            "ZFlow is orchestrated via utils.zflow_training.ZFlowRunner (main.py branch), "
+            "not via create_distillation_model."
+        )
+
     teacher_channels = get_layer_channels(args.teacher, args.teacher_layer)
     student_channels = get_layer_channels(args.student, args.student_layer)
 
