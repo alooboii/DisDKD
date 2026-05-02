@@ -518,11 +518,23 @@ class ZFlowRunner:
         if not pair_indices:
             raise ValueError("No valid layer pairs for evaluation")
 
+        teacher_params = sum(p.numel() for p in self.teacher.parameters())
+        zspace_params = sum(p.numel() for p in self.zspace.parameters())
+        flow_params = sum(p.numel() for p in self.flow.parameters())
+        params_by_baseline = {
+            "full_teacher": teacher_params,
+            "skip_block": teacher_params,
+            "z_checkpoint": teacher_params + zspace_params,
+            "linear_z_oracle": teacher_params + zspace_params,
+            "flow_replacement": teacher_params + zspace_params + flow_params,
+        }
+
         eval_headers = [
             "baseline",
             "pair",
             "k",
             "available",
+            "num_params",
             "accuracy",
             "kl_to_teacher",
             "endpoint_latent_error",
@@ -702,6 +714,7 @@ class ZFlowRunner:
                     "pair": pair_name,
                     "k": int(k),
                     "available": available_flag,
+                    "num_params": params_by_baseline.get(baseline, 0),
                     "accuracy": agg.get("accuracy", 0.0) / count,
                     "kl_to_teacher": agg.get("kl_to_teacher", 0.0) / count,
                     "endpoint_latent_error": agg.get("endpoint_latent_error", 0.0)
@@ -716,6 +729,7 @@ class ZFlowRunner:
                     "pair": pair_name,
                     "k": int(k),
                     "available": available_flag,
+                    "num_params": params_by_baseline.get(baseline, 0),
                     "accuracy": "",
                     "kl_to_teacher": "",
                     "endpoint_latent_error": "",
