@@ -82,6 +82,7 @@ def parse_args():
             "LogitMSE",
             "FlowKD",
             "ZFlow",
+            "DirectTrajectoryZFlow",
             "DKD",
             "DisDKD",
             "FitNet",
@@ -305,6 +306,132 @@ def parse_args():
         default="",
         help="Path to Stage-2 flow checkpoint",
     )
+    parser.add_argument(
+        "--traj_stage",
+        type=str,
+        default="flow",
+        choices=["flow", "student", "all"],
+        help="DirectTrajectoryZFlow stage to run",
+    )
+    parser.add_argument(
+        "--traj_start_layer",
+        type=int,
+        default=1,
+        help="1-based teacher block index used as trajectory start",
+    )
+    parser.add_argument(
+        "--traj_end_layer",
+        type=int,
+        default=-1,
+        help="1-based teacher block index used as trajectory end; -1 means last block",
+    )
+    parser.add_argument(
+        "--traj_intermediate_layers",
+        nargs="+",
+        type=int,
+        default=[],
+        help="1-based teacher block indices supervised as trajectory path points; empty => all between start/end",
+    )
+    parser.add_argument(
+        "--traj_flow_steps",
+        type=int,
+        default=8,
+        help="Euler steps for trajectory flow training and target generation",
+    )
+    parser.add_argument(
+        "--traj_eval_steps",
+        nargs="+",
+        type=int,
+        default=[2, 4, 8],
+        help="Euler step counts for optional trajectory diagnostics",
+    )
+    parser.add_argument(
+        "--traj_lambda_fm",
+        type=float,
+        default=1.0,
+        help="DirectTrajectoryZFlow flow-matching loss weight",
+    )
+    parser.add_argument(
+        "--traj_lambda_path",
+        type=float,
+        default=1.0,
+        help="DirectTrajectoryZFlow path supervision loss weight",
+    )
+    parser.add_argument(
+        "--traj_lambda_end",
+        type=float,
+        default=1.0,
+        help="DirectTrajectoryZFlow endpoint rollout loss weight",
+    )
+    parser.add_argument(
+        "--traj_velocity_hidden_dim",
+        type=int,
+        default=512,
+        help="Hidden dimension of DirectTrajectoryZFlow velocity model",
+    )
+    parser.add_argument(
+        "--traj_velocity_num_blocks",
+        type=int,
+        default=2,
+        help="Number of residual blocks in DirectTrajectoryZFlow velocity model",
+    )
+    parser.add_argument(
+        "--traj_velocity_use_attention",
+        type=str2bool,
+        default=False,
+        help="Enable lightweight token self-attention in DirectTrajectoryZFlow velocity blocks",
+    )
+    parser.add_argument(
+        "--traj_velocity_num_heads",
+        type=int,
+        default=8,
+        help="Number of attention heads when --traj_velocity_use_attention is true",
+    )
+    parser.add_argument(
+        "--traj_time_embed_dim",
+        type=int,
+        default=128,
+        help="Time embedding dimension for DirectTrajectoryZFlow velocity model",
+    )
+    parser.add_argument(
+        "--traj_lambda_hidden",
+        type=float,
+        default=1.0,
+        help="Hidden-state trajectory matching loss weight in student stage",
+    )
+    parser.add_argument(
+        "--traj_target_mode",
+        type=str,
+        default="flow",
+        choices=["flow", "discrete"],
+        help="Student hidden target mode: continuous flow targets or nearest discrete teacher layers",
+    )
+    parser.add_argument(
+        "--traj_student_adapter",
+        type=str2bool,
+        default=True,
+        help="Enable per-layer student adapters when student and teacher hidden dims differ",
+    )
+    parser.add_argument(
+        "--traj_student_adapter_type",
+        type=str,
+        default="linear",
+        choices=["linear", "mlp"],
+        help="Type of per-layer student adapters for hidden-dim mismatch",
+    )
+    parser.add_argument(
+        "--traj_match_tokens",
+        type=str,
+        default="all",
+        choices=["all", "cls"],
+        help="Token matching mode for trajectory hidden-state loss",
+    )
+    parser.add_argument(
+        "--trajectory_ckpt",
+        type=str,
+        default="",
+        help="Path to trained DirectTrajectoryZFlow velocity checkpoint",
+    )
 
     # ContraDKD-specific hyperparamters
     parser.add_argument(
@@ -519,5 +646,26 @@ def print_training_config(args):
             print(f"ZFlow zspace_ckpt: {args.zspace_ckpt}")
         if args.flow_ckpt:
             print(f"ZFlow flow_ckpt: {args.flow_ckpt}")
+    elif args.method == "DirectTrajectoryZFlow":
+        print(f"DirectTrajectoryZFlow stage: {args.traj_stage}")
+        print(
+            f"Trajectory layers: start={args.traj_start_layer}, end={args.traj_end_layer}, "
+            f"intermediate={args.traj_intermediate_layers if args.traj_intermediate_layers else 'auto'}"
+        )
+        print(
+            f"Flow config: steps={args.traj_flow_steps}, eval_steps={args.traj_eval_steps}, "
+            f"lambda_fm={args.traj_lambda_fm}, lambda_path={args.traj_lambda_path}, lambda_end={args.traj_lambda_end}"
+        )
+        print(
+            f"Velocity model: hidden_dim={args.traj_velocity_hidden_dim}, blocks={args.traj_velocity_num_blocks}, "
+            f"use_attention={args.traj_velocity_use_attention}, heads={args.traj_velocity_num_heads}, "
+            f"time_embed_dim={args.traj_time_embed_dim}"
+        )
+        print(
+            f"Student stage: target_mode={args.traj_target_mode}, lambda_hidden={args.traj_lambda_hidden}, "
+            f"match_tokens={args.traj_match_tokens}, adapter={args.traj_student_adapter}/{args.traj_student_adapter_type}"
+        )
+        if args.trajectory_ckpt:
+            print(f"DirectTrajectoryZFlow trajectory_ckpt: {args.trajectory_ckpt}")
 
     print("=" * 40)

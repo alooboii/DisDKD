@@ -9,6 +9,7 @@ Compact PyTorch training repo for experimenting with multiple KD methods, now in
 - `LogitMSE`: CE + MSE between student and teacher logits.
 - `FlowKD`: CE + optional KL + flow-matching velocity loss over logits/probabilities.
 - `ZFlow`: teacher-only 3-stage pipeline (Z-space learning, flow learning, zero-shot block replacement eval).
+- `DirectTrajectoryZFlow`: ViT-only trajectory flow + flow-guided student hidden-state distillation.
 - Existing methods: `DKD`, `DisDKD`, `FitNet`, `CRD`, `ContraDKD`.
 
 ## FlowKD Objective
@@ -161,3 +162,69 @@ Artifacts:
 - `.../zflow/zspace_best.pth`, `zspace_last.pth`
 - `.../zflow/flow_best.pth`, `flow_last.pth`
 - `.../zflow/zspace_log.csv`, `flow_log.csv`, `eval_metrics.csv`
+
+## DirectTrajectoryZFlow (ViT Hidden Trajectory Distillation)
+This variant is separate from ZFlow:
+- No Z-space autoencoder.
+- No zero-shot block replacement.
+- Learns a continuous teacher hidden-state trajectory in ViT hidden space `[B, N, D]`.
+- Uses that trajectory to supervise student hidden states during training.
+
+### Stage 1: train teacher trajectory flow
+```bash
+python main.py \
+  --method DirectTrajectoryZFlow \
+  --traj_stage flow \
+  --teacher vit_b_16 \
+  --dataset CIFAR100 \
+  --epochs 20 \
+  --traj_start_layer 1 \
+  --traj_end_layer -1 \
+  --traj_flow_steps 8 \
+  --traj_lambda_fm 1.0 \
+  --traj_lambda_path 1.0 \
+  --traj_lambda_end 1.0 \
+  --traj_velocity_hidden_dim 512 \
+  --traj_velocity_num_blocks 2 \
+  --traj_match_tokens all \
+  --save_dir ./checkpoints/direct_traj
+```
+
+### Stage 2: train student with trajectory targets
+```bash
+python main.py \
+  --method DirectTrajectoryZFlow \
+  --traj_stage student \
+  --teacher vit_b_16 \
+  --student vit_b_16 \
+  --dataset CIFAR100 \
+  --trajectory_ckpt ./checkpoints/direct_traj/direct_trajectory_zflow/trajectory_flow_best.pth \
+  --traj_target_mode flow \
+  --epochs 100 \
+  --alpha 1.0 \
+  --beta 1.0 \
+  --traj_lambda_hidden 1.0 \
+  --traj_match_tokens all \
+  --save_dir ./checkpoints/direct_traj
+```
+
+### Discrete baseline in the same pipeline
+```bash
+python main.py \
+  --method DirectTrajectoryZFlow \
+  --traj_stage student \
+  --teacher vit_b_16 \
+  --student vit_b_16 \
+  --dataset CIFAR100 \
+  --traj_target_mode discrete \
+  --epochs 100 \
+  --alpha 1.0 \
+  --beta 1.0 \
+  --traj_lambda_hidden 1.0
+```
+
+Artifacts:
+- `.../direct_trajectory_zflow/trajectory_flow_log.csv`
+- `.../direct_trajectory_zflow/trajectory_flow_best.pth`
+- `.../direct_trajectory_zflow/trajectory_student_log.csv`
+- `.../direct_trajectory_zflow/trajectory_eval_log.csv`

@@ -97,6 +97,45 @@ class TeacherModel(nn.Module):
                         f"{num_classes} classes. If no matching fine-tuned "
                         "teacher_weights are loaded, teacher logits may be weak."
                     )
+        elif model_name.startswith("vit_"):
+            if not hasattr(models, model_name):
+                raise ValueError(
+                    f"Unsupported ViT model '{model_name}' in torchvision.models"
+                )
+            if pretrained:
+                parts = model_name.split("_")
+                if len(parts) != 3:
+                    raise ValueError(
+                        f"Unsupported ViT model format '{model_name}'. Expected e.g. vit_b_16."
+                    )
+                enum_name = f"ViT_{parts[1].upper()}_{parts[2]}_Weights"
+                if not hasattr(models, enum_name):
+                    raise ValueError(
+                        f"Unsupported ViT weights enum '{enum_name}' for model '{model_name}'"
+                    )
+                weights_enum = getattr(models, enum_name)
+                weights = weights_enum.DEFAULT
+                print(f"[Teacher] Loading pretrained ImageNet weights for {model_name}")
+            else:
+                weights = None
+                print(f"[Teacher] Initializing {model_name} with random weights")
+
+            model = getattr(models, model_name)(weights=weights)
+
+            if hasattr(model, "heads") and hasattr(model.heads, "head"):
+                if num_classes != model.heads.head.out_features:
+                    in_feats = model.heads.head.in_features
+                    model.heads.head = nn.Linear(in_feats, num_classes)
+                    if pretrained:
+                        print(
+                            f"[Teacher WARNING] Replaced {model_name} classifier for "
+                            f"{num_classes} classes. If no matching fine-tuned "
+                            "teacher_weights are loaded, teacher logits may be weak."
+                        )
+            else:
+                raise ValueError(
+                    f"Unsupported ViT head layout for model '{model_name}'. Expected model.heads.head"
+                )
 
         else:
             raise ValueError(f"Unsupported model: {model_name}")
@@ -162,6 +201,20 @@ class StudentModel(nn.Module):
                         layers[i] = nn.Linear(in_feats, num_classes)
                         break
                 model.classifier = nn.Sequential(*layers)
+        elif model_name.startswith("vit_"):
+            if not hasattr(models, model_name):
+                raise ValueError(
+                    f"Unsupported ViT model '{model_name}' in torchvision.models"
+                )
+            model = getattr(models, model_name)(weights=None)
+            if hasattr(model, "heads") and hasattr(model.heads, "head"):
+                if num_classes != model.heads.head.out_features:
+                    in_feats = model.heads.head.in_features
+                    model.heads.head = nn.Linear(in_feats, num_classes)
+            else:
+                raise ValueError(
+                    f"Unsupported ViT head layout for model '{model_name}'. Expected model.heads.head"
+                )
                 
         else:
             raise ValueError(f"Unsupported model: {model_name}")

@@ -10,6 +10,7 @@ from utils.config import parse_args, validate_and_setup_domains, print_training_
 from utils.training import Trainer
 from utils.logging import LossTracker
 from utils.zflow_training import ZFlowRunner
+from utils.direct_trajectory_training import DirectTrajectoryRunner
 
 
 def main():
@@ -57,6 +58,14 @@ def main():
     elif args.method == 'ZFlow':
         teacher = TeacherModel(args.teacher, num_classes, args.teacher_weights).to(device)
         student = None
+    elif args.method == "DirectTrajectoryZFlow":
+        teacher = TeacherModel(args.teacher, num_classes, args.teacher_weights).to(device)
+        if args.traj_stage in ["student", "all"]:
+            student = StudentModel(
+                args.student, num_classes, args.student_weights
+            ).to(device)
+        else:
+            student = None
     else:
         teacher = TeacherModel(args.teacher, num_classes, args.teacher_weights).to(device)
         student = StudentModel(args.student, num_classes, args.student_weights).to(device)
@@ -71,6 +80,18 @@ def main():
         )
         runner.run()
         print("\nZFlow run completed.")
+        return
+    if args.method == "DirectTrajectoryZFlow":
+        runner = DirectTrajectoryRunner(
+            args=args,
+            teacher=teacher,
+            student=student,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            device=device,
+        )
+        runner.run()
+        print("\nDirectTrajectoryZFlow run completed.")
         return
     
     # Initialize trainer
